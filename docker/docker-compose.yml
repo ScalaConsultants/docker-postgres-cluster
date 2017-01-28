@@ -1,0 +1,68 @@
+version: '2'
+services:
+  master:
+    container_name: ${COMPOSE_PROJECT_NAME}-master
+    hostname: master
+    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres:latest
+    build: .
+    expose:
+      - "5432"
+    env_file:
+      - ../etc/env.sh
+    environment:
+      - "IMAGE_TYPE=master"
+      - "constraint:node==${MASTER_NODE}"
+    volumes:
+      - ${MASTER_VOLUME_ETC_SSH}:/etc/ssh
+      - ${MASTER_VOLUME_ROOT_SSH}:/root/.ssh
+      - ${MASTER_VOLUME_POSTGRES_SSH}:/var/lib/postgresql/.ssh
+      - ${MASTER_VOLUME_POSTGRES_ARCHIVE}:/var/lib/postgresql/archive
+      - ${MASTER_VOLUME_POSTGRES_DATA}:/var/lib/postgresql/data
+    dns_search: .
+    networks:
+      backend:
+        ipv4_address: ${MASTER_IP}
+      frontend:
+        aliases:
+          - pool
+
+  standby:
+    container_name: ${COMPOSE_PROJECT_NAME}-standby
+    hostname: standby
+    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres:latest
+    expose:
+      - "5432"
+    env_file:
+      - ../etc/env.sh
+    environment:
+      - "IMAGE_TYPE=standby"
+      - "affinity:container!=master"
+      - "constraint:node==${STANDBY_NODE}"
+    volumes:
+      - ${STANDBY_VOLUME_ETC_SSH}:/etc/ssh
+      - ${STANDBY_VOLUME_ROOT_SSH}:/root/.ssh
+      - ${STANDBY_VOLUME_POSTGRES_SSH}:/var/lib/postgresql/.ssh
+      - ${STANDBY_VOLUME_POSTGRES_ARCHIVE}:/var/lib/postgresql/archive
+      - ${STANDBY_VOLUME_POSTGRES_DATA}:/var/lib/postgresql/data
+    dns_search: .
+    networks:
+      backend:
+        ipv4_address: ${STANDBY_IP}
+      frontend:
+        aliases:
+          - pool
+
+networks:
+  backend:
+    driver: overlay
+    internal: true
+    ipam:
+      config:
+        - subnet: ${POSTGRES_BACKEND_SUBNET}
+
+  frontend:
+    driver: overlay
+    internal: true
+    ipam:
+      config:
+        - subnet: ${POSTGRES_FRONTEND_SUBNET}

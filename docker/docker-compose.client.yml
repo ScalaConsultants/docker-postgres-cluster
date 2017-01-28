@@ -1,0 +1,12 @@
+version: '2'
+services:
+  client:
+    image: postgres:latest
+    command: bash -c "echo '*:*:*:${POSTGRES_USER}:${POSTGRES_PASSWORD}' > ~/.pgpass; chmod 600 ~/.pgpass; sleep 3600000"
+    networks:
+      - frontend
+
+networks:
+  frontend:
+    external:
+      name: postgrescluster_frontend
