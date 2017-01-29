@@ -76,8 +76,20 @@ function is_running() {
 }
 
 function is_dirty() {
-  declare -i EXIT_CODE=$(docker-compose ps | grep $1 | grep Exit | awk '{ print $4 }')
-  if [[ $EXIT_CODE -eq 0 || $EXIT_CODE -eq 2 ]]; then
+  declare -i IS_RUNNING="$(is_running $1)"
+  DOCKER_OPTS="exec $1 bash -c"
+  if [ $IS_RUNNING -eq 0 ]; then
+    DOCKER_OPTS="run --no-deps --rm -T --entrypoint bash $1 -c"
+  fi
+  STATE="$(docker-compose $DOCKER_OPTS "gosu postgres pg_controldata | grep 'Database cluster state' | awk -F ':' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')"
+
+  if [[ $IS_RUNNING -eq 0 && "${STATE}" = "shut down in production" ]]; then
+    echo 0
+  elif [[ $IS_RUNNING -eq 0 && "${STATE}" = "shut down in recovery" ]]; then
+    echo 0
+  elif [[ $IS_RUNNING -eq 1 && "${STATE}" = "in production" ]]; then
+    echo 0
+  elif [[ $IS_RUNNING -eq 1 && "${STATE}" = "in archive recovery" ]]; then
     echo 0
   else
     echo 1
@@ -186,8 +198,8 @@ function wait_for_db_shutdown() {
   TIMEOUT=5
   MAX_TRIES=50
   while [[ "$MAX_TRIES" != "0" ]]; do
-    declare -i EXITED=$(docker-compose ps $1 | grep -c Exit)
-    if [ $EXISTS -ne 1 ]; then
+    declare -i EXITED="$(docker-compose ps $1 | grep -c Exit)"
+    if [ $EXITED -ne 1 ]; then
       sleep $TIMEOUT
     else
       break
@@ -274,27 +286,13 @@ function start() {
 
   if [[ $MASTER_TIMELINE -ge $STANDBY_TIMELINE && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
     docker-compose up -d master
-    if [[ "$STANDBY_IS_IN_RECOVERY" = "t" ]]; then
+    if [ "$STANDBY_IS_IN_RECOVERY" = "t" ]; then
       docker-compose up -d standby
-      (wait_for_pgpool standby && \
-        ( \
-        docker-compose exec master gosu postgres pcp_attach_node -w -n 1 && \
-        docker-compose exec standby gosu postgres pcp_attach_node -w -n 0 && \
-        docker-compose exec standby gosu postgres pcp_attach_node -w -n 1 \
-        ) \
-      ) || true
     fi
   elif [[ $STANDBY_TIMELINE -ge $MASTER_TIMELINE && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
     docker-compose up -d standby
-    if [[ "$MASTER_IS_IN_RECOVERY" = "t" ]]; then
+    if [ "$MASTER_IS_IN_RECOVERY" = "t" ]; then
       docker-compose up -d master
-      (wait_for_pgpool master && \
-        ( \
-        docker-compose exec standby gosu postgres pcp_attach_node -w -n 0 && \
-        docker-compose exec master gosu postgres pcp_attach_node -w -n 1 && \
-        docker-compose exec master gosu postgres pcp_attach_node -w -n 0 \
-        ) \
-      ) || true
     fi
   fi
 
@@ -313,35 +311,36 @@ function stop() {
 
   if [[ $MASTER_IS_RUNNING -eq 1 && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
     if [ $STANDBY_IS_RUNNING -eq 1 ]; then
-      docker-compose exec standby gosu postgres pcp_detach_node -w -n 1
-      docker-compose exec standby gosu postgres pcp_detach_node -w -n 0
+      docker-compose exec standby gosu postgres pcp_stop_pgpool -w
     fi
 
-    docker-compose exec master gosu postgres pcp_detach_node -w -n 1
-    docker-compose exec master gosu postgres pcp_detach_node -w -n 0
-
+    docker-compose exec master gosu postgres pcp_stop_pgpool -w
+    docker-compose exec master gosu postgres pg_ctl -D $PGDATA -w stop
     docker-compose stop master
+    docker-compose rm -f master
+
     if [ $STANDBY_IS_RUNNING -eq 1 ]; then
-      wait_for_db_shutdown master && true
+      docker-compose exec standby gosu postgres pg_ctl -D $PGDATA -w stop
       docker-compose stop standby
+      docker-compose rm -f standby
     fi
   elif [[ $STANDBY_IS_RUNNING -eq 1 && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
     if [ $MASTER_IS_RUNNING -eq 1 ]; then
-      docker-compose exec master gosu postgres pcp_detach_node -w -n 0
-      docker-compose exec master gosu postgres pcp_detach_node -w -n 1
+      docker-compose exec master gosu postgres pcp_stop_pgpool -w
     fi
 
-    docker-compose exec standby gosu postgres pcp_detach_node -w -n 0
-    docker-compose exec standby gosu postgres pcp_detach_node -w -n 1
-
+    docker-compose exec standby gosu postgres pcp_stop_pgpool -w
+    docker-compose exec standby gosu postgres pg_ctl -D $PGDATA -w stop
     docker-compose stop standby
+    docker-compose rm -f standby
+
     if [ $MASTER_IS_RUNNING -eq 1 ]; then
-      wait_for_db_shutdown standby && true
+      docker-compose exec master gosu postgres pg_ctl -D $PGDATA -w stop
       docker-compose stop master
+      docker-compose rm -f master
     fi
   fi
 
-  docker-compose stop
   cd_root_dir
 }
 
@@ -485,7 +484,7 @@ function recovery() {
   cd_docker_dir
 
   printf "\033[1A"
-  print_h2 "Discovering recovery target."
+  print_h2 "Discovering recovery target"
   declare -i RECOVERY_NODE=$(detect_recovery_target)
 
   if [ $RECOVERY_NODE -eq 0 ]; then
@@ -499,26 +498,27 @@ function recovery() {
     exit 0
   fi
 
-  print_h2 "Preparing for replication ($RECOVERY_SOURCE -> $RECOVERY_TARGET)."
-# exit 0
-  docker-compose stop $RECOVERY_TARGET
+  print_h2 "Recovering $RECOVERY_TARGET node"
+
+  # docker-compose stop $RECOVERY_TARGET
 
   declare -i IS_DIRTY=$(is_dirty $RECOVERY_TARGET)
   if [ $IS_DIRTY -eq 1 ]; then
+    print_h2 "Performing clean shut down on $RECOVERY_TARGET node"
     docker-compose run --no-deps --rm --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_ctl -D $PGDATA -w start && gosu postgres pg_ctl -D $PGDATA -w stop"
   fi
 
-  print_h2 "Syncing pg_xlog."
+  print_h2 "Syncing pg_xlog"
   docker-compose run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rsync -avz $RECOVERY_SOURCE:$PGDATA/pg_xlog/ $PGDATA/pg_xlog/"
 
-  print_h2 "Syncing archive logs."
+  print_h2 "Syncing archive logs"
   docker-compose run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rsync -avz $RECOVERY_SOURCE:$CLUSTER_ARCHIVE/ $CLUSTER_ARCHIVE/"
 
-  print_h2 "Syncing data directory."
+  print_h2 "Syncing data directory"
   docker-compose run --no-deps --rm --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_rewind --target-pgdata=$PGDATA --source-server='host=$RECOVERY_SOURCE port=$PGPORT dbname=postgres user=$POSTGRES_USER  password=$POSTGRES_PASSWORD'"
 
 
-  print_h2 "Configuring recovery target ($RECOVERY_TARGET)."
+  print_h2 "Configuring $RECOVERY_TARGET node"
   if [ $RECOVERY_SOURCE == "master" ]; then
     RECOVERY_FILE=$(docker-compose run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "(test -f $PGDATA/recovery.done && cat $PGDATA/recovery.done) || cat $PGDATA/recovery.conf")
     NEW_RECOVERY_FILE=$(echo "$RECOVERY_FILE" | sed -e "s/host=$RECOVERY_TARGET/host=$RECOVERY_SOURCE/")
@@ -531,16 +531,15 @@ function recovery() {
     docker-compose run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chown postgres:postgres $PGDATA/recovery.conf"
   fi
 
-  print_h2 "Starting recovery target ($RECOVERY_TARGET)."
-  docker-compose start $RECOVERY_TARGET
+  print_h2 "Starting $RECOVERY_TARGET node"
+  docker-compose up -d $RECOVERY_TARGET
   wait_for_db $RECOVERY_TARGET
 
-  print_h2 "Attaching node."
+  print_h2 "Attaching $RECOVERY_TARGET node"
   declare -i WORKING_NODE="$( ([ $RECOVERY_NODE -eq 1 ] && echo 0) || echo 1)"
   (wait_for_pgpool $RECOVERY_TARGET && \
     ( \
     docker-compose exec $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
-    docker-compose exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
     docker-compose exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $WORKING_NODE \
     ) \
   ) || true
@@ -614,30 +613,39 @@ function failback() {
 
 
   printf "\033[1A"
-  print_h2 "Preparing for replication (standby -> master)."
+  print_h2 "Stopping load balancer on standby node"
+  docker-compose exec standby gosu postgres pcp_stop_pgpool -w
+
+  print_h2 "Stopping standby node"
+  docker-compose exec -T standby gosu postgres pg_ctl -D $PGDATA -w stop
   docker-compose stop standby
+  docker-compose rm -f standby
+
+  print_h2 "Promoting master node"
   docker-compose exec -T master gosu postgres pg_ctl promote -w
   sleep 5
 
-  print_h2 "Syncing archive logs."
+  print_h2 "Syncing archive logs"
   docker-compose run --no-deps --rm -T standby rsync -avz master:$CLUSTER_ARCHIVE/ $CLUSTER_ARCHIVE/
 
-  print_h2 "Syncing data directory."
+  print_h2 "Syncing data directory"
   docker-compose run --no-deps --rm -T standby gosu postgres pg_rewind --target-pgdata=$PGDATA --source-server="host=master port=$PGPORT dbname=postgres user=$POSTGRES_USER password=$POSTGRES_PASSWORD"
 
-  print_h2 "Configuring recovery target (standby)."
+  print_h2 "Configuring standby node"
   RECOVERY_FILE=$(docker-compose exec master bash -c "(test -f $PGDATA/recovery.done && cat $PGDATA/recovery.done) || cat $PGDATA/recovery.conf")
   NEW_RECOVERY_FILE=$(echo "$RECOVERY_FILE" | sed -e "s/host=standby/host=master/")
 
   docker-compose run --no-deps --rm -T standby bash -c "echo \"$NEW_RECOVERY_FILE\" > $PGDATA/recovery.conf"
   docker-compose run --no-deps --rm -T standby chown postgres:postgres $PGDATA/recovery.conf
 
-  print_h2 "Starting recovery target (standby)."
-  docker-compose start standby
+  print_h2 "Starting standby node"
+  docker-compose up -d standby
   wait_for_db "standby"
 
-  print_h2 "Attaching node."
-  docker-compose exec -T master gosu postgres pcp_attach_node -w -n 1
+  print_h2 "Attaching standby node"
+
+
+  (wait_for_pgpool standby && docker-compose exec -T master gosu postgres pcp_attach_node -w -n 1) || true
   cd_root_dir
 }
 
