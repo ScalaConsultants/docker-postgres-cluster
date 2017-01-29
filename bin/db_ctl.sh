@@ -8,12 +8,6 @@ if [ "$DEBUG" = "1" ]; then
   set -x
 fi
 
-# PREFIX="##"
-# H1_PREFIX=$PREFIX
-# H2_PREFIX=$PREFIX
-# INFO_PREFIX=$PREFIX
-# ERROR_PREFIX=$PREFIX
-
 H1_PREFIX="##"
 H2_PREFIX="--"
 INFO_PREFIX="##"
@@ -124,6 +118,11 @@ function is_pgpool_running() {
   [ "$OLDPWD" != "$ROOT_DIR/docker" ] && cd - >/dev/null
 }
 
+function is_alive() {
+  NODE=$1
+  (ping -c 2 $NODE > /dev/null 2>&1 && echo 1) || echo 0
+}
+
 function detect_recovery_target() {
   [ "$PWD" != "$ROOT_DIR/docker" ] && cd_docker_dir
   declare -i MASTER_IS_RUNNING=$(is_running master)
@@ -189,20 +188,6 @@ function wait_for_db() {
       else
         break
       fi
-    fi
-    MAX_TRIES=`expr "$MAX_TRIES" - 1`
-  done
-}
-
-function wait_for_db_shutdown() {
-  TIMEOUT=5
-  MAX_TRIES=50
-  while [[ "$MAX_TRIES" != "0" ]]; do
-    declare -i EXITED="$(docker-compose ps $1 | grep -c Exit)"
-    if [ $EXITED -ne 1 ]; then
-      sleep $TIMEOUT
-    else
-      break
     fi
     MAX_TRIES=`expr "$MAX_TRIES" - 1`
   done
@@ -347,73 +332,117 @@ function stop() {
 function status() {
   print_h1 "Checking PostgreSQL cluster status..."
   cd_docker_dir
-  declare -i MASTER_IS_RUNNING=$(is_running master)
-  declare -i MASTER_IS_DIRTY=$(is_dirty master)
-  declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
-  declare -i STANDBY_IS_RUNNING=$(is_running standby)
-  declare -i STANDBY_IS_DIRTY=$(is_dirty standby)
-  declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+  declare -i MASTER_IS_ALIVE=$(is_alive $(docker-machine ip $MASTER_NODE))
+  declare -i STANDBY_IS_ALIVE=$(is_alive $(docker-machine ip $STANDBY_NODE))
 
-  if [ $MASTER_IS_RUNNING -eq 1 ]; then
-    MASTER_DOCKER_OPTS="exec master bash -c"
-    if [ "$MASTER_IS_IN_RECOVERY" = "f" ]; then
-      MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_current_xlog_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
+  if [ $MASTER_IS_ALIVE -eq 1 ]; then
+    declare -i MASTER_IS_RUNNING=$(is_running master)
+    declare -i MASTER_IS_DIRTY=$(is_dirty master)
+    declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+
+    if [ $MASTER_IS_RUNNING -eq 1 ]; then
+      MASTER_DOCKER_OPTS="exec master bash -c"
+      if [ "$MASTER_IS_IN_RECOVERY" = "f" ]; then
+        MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_current_xlog_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
+      else
+        MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_last_xlog_replay_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
+      fi
     else
-      MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_last_xlog_replay_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
+      MASTER_DOCKER_OPTS="run --no-deps --rm --entrypoint bash master -c"
+      MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
     fi
-  else
-    MASTER_DOCKER_OPTS="run --no-deps --rm --entrypoint bash master -c"
-    MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
+
+    declare -i MASTER_TIMELINE="$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
   fi
 
-  if [ $STANDBY_IS_RUNNING -eq 1 ]; then
-    STANDBY_DOCKER_OPTS="exec standby bash -c"
-    if [ "$STANDBY_IS_IN_RECOVERY" = "f" ]; then
-      STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_current_xlog_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
-    else
-      STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_last_xlog_replay_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
-    fi
-  else
-    STANDBY_DOCKER_OPTS="run --no-deps --rm --entrypoint bash standby -c"
-    STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
-  fi
+  if [ $STANDBY_IS_ALIVE -eq 1 ]; then
+    declare -i STANDBY_IS_RUNNING=$(is_running standby)
+    declare -i STANDBY_IS_DIRTY=$(is_dirty standby)
+    declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
 
-  declare -i MASTER_TIMELINE="$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
-  declare -i STANDBY_TIMELINE="$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+    if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+      STANDBY_DOCKER_OPTS="exec standby bash -c"
+      if [ "$STANDBY_IS_IN_RECOVERY" = "f" ]; then
+        STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_current_xlog_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
+      else
+        STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_last_xlog_replay_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
+      fi
+    else
+      STANDBY_DOCKER_OPTS="run --no-deps --rm --entrypoint bash standby -c"
+      STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
+    fi
+
+    declare -i STANDBY_TIMELINE="$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+  fi
 
 
   printf "\033[1A"
   print_h2 "Cluster nodes"
 
-  printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
-    "$(printf "${TEXT_COLOR}%-8s\033[0m" "master")" \
-    "$(([ $MASTER_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
-    "$( ([ $MASTER_IS_DIRTY -eq 1 ] && printf "${FAILED_COLOR}%-6s\033[0m" "true") || printf "${SUCCESS_COLOR}%-6s\033[0m" "false")" \
-    "$(([ "$MASTER_IS_IN_RECOVERY" = "t" ] && printf "${TEXT_COLOR}%-6s\033[0m" "true") || printf "${TEXT_COLOR}%-6s\033[0m" "false")" \
-    "$(printf "${TEXT_COLOR}${MASTER_XLOG_LOCATION} \033[0m")" \
-    "$(printf "${TEXT_COLOR}${MASTER_TIMELINE}\033[0m")"
-
-  printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
-    "$(printf "${TEXT_COLOR}%-8s\033[0m" "standby")" \
-    "$(([ $STANDBY_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
-    "$( ([ $STANDBY_IS_DIRTY -eq 1 ] && printf "${FAILED_COLOR}%-6s\033[0m" "true") || printf "${SUCCESS_COLOR}%-6s\033[0m" "false")" \
-    "$(([ "$STANDBY_IS_IN_RECOVERY" = "t" ] && printf "${TEXT_COLOR}%-6s\033[0m" "true") || printf "${TEXT_COLOR}%-6s\033[0m" "false")" \
-    "$(printf "${TEXT_COLOR}${STANDBY_XLOG_LOCATION} \033[0m")" \
-    "$(printf "${TEXT_COLOR}${STANDBY_TIMELINE}\033[0m")"
-
-
-  declare -i MASTER_IS_PGPOOL_RUNNING=$(is_pgpool_running master)
-  declare -i STANDBY_IS_PGPOOL_RUNNING=$(is_pgpool_running standby)
-
-  print_h2 "Load balancers"
-  if [[ $MASTER_IS_RUNNING -eq 1 && $MASTER_IS_PGPOOL_RUNNING -eq 1 ]]; then
-    print_node_info master 0
-    print_node_info master 1
+  if [ $MASTER_IS_ALIVE -eq 1 ]; then
+    printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
+      "$(printf "${TEXT_COLOR}%-8s\033[0m" "master")" \
+      "$(([ $MASTER_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
+      "$( ([ $MASTER_IS_DIRTY -eq 1 ] && printf "${FAILED_COLOR}%-6s\033[0m" "true") || printf "${SUCCESS_COLOR}%-6s\033[0m" "false")" \
+      "$(([ "$MASTER_IS_IN_RECOVERY" = "t" ] && printf "${TEXT_COLOR}%-6s\033[0m" "true") || printf "${TEXT_COLOR}%-6s\033[0m" "false")" \
+      "$(printf "${TEXT_COLOR}%-12s\033[0m" $MASTER_XLOG_LOCATION)" \
+      "$(printf "${TEXT_COLOR}${MASTER_TIMELINE}\033[0m")"
+  else
+    printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
+      "$(printf "${TEXT_COLOR}%-8s\033[0m" "master")" \
+      "$(printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
+      "$(printf "${FAILED_COLOR}%-6s\033[0m" "-")" \
+      "$(printf "${FAILED_COLOR}%-6s\033[0m" "-")" \
+      "$(printf "${FAILED_COLOR}%-12s\033[0m" "-")" \
+      "$(printf "${FAILED_COLOR}-\033[0m")"
   fi
 
-  if [[ $STANDBY_IS_RUNNING -eq 1 && $STANDBY_IS_PGPOOL_RUNNING -eq 1 ]]; then
-    print_node_info standby 0
-    print_node_info standby 1
+  if [ $STANDBY_IS_ALIVE -eq 1 ]; then
+    printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
+      "$(printf "${TEXT_COLOR}%-8s\033[0m" "standby")" \
+      "$(([ $STANDBY_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
+      "$( ([ $STANDBY_IS_DIRTY -eq 1 ] && printf "${FAILED_COLOR}%-6s\033[0m" "true") || printf "${SUCCESS_COLOR}%-6s\033[0m" "false")" \
+      "$(([ "$STANDBY_IS_IN_RECOVERY" = "t" ] && printf "${TEXT_COLOR}%-6s\033[0m" "true") || printf "${TEXT_COLOR}%-6s\033[0m" "false")" \
+      "$(printf "${TEXT_COLOR}%-12s\033[0m" $STANDBY_XLOG_LOCATION)" \
+      "$(printf "${TEXT_COLOR}${STANDBY_TIMELINE}\033[0m")"
+  else
+    printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
+      "$(printf "${TEXT_COLOR}%-8s\033[0m" "standby")" \
+      "$(printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
+      "$(printf "${FAILED_COLOR}%-6s\033[0m" "-")" \
+      "$(printf "${FAILED_COLOR}%-6s\033[0m" "-")" \
+      "$(printf "${FAILED_COLOR}%-12s\033[0m" "-")" \
+      "$(printf "${FAILED_COLOR}-\033[0m")"
+  fi
+
+  print_h2 "Load balancers"
+
+  if [ $MASTER_IS_ALIVE -eq 1 ]; then
+    declare -i MASTER_IS_PGPOOL_RUNNING=$(is_pgpool_running master)
+    if [[ $MASTER_IS_RUNNING -eq 1 && $MASTER_IS_PGPOOL_RUNNING -eq 1 ]]; then
+      print_node_info master 0
+      print_node_info master 1
+    else
+      printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "master" "master" "-" "-" "down"
+      printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "master" "standby" "-" "-" "down"
+    fi
+  else
+    printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "master" "master" "-" "-" "down"
+    printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "master" "standby" "-" "-" "down"
+  fi
+
+  if [ $STANDBY_IS_ALIVE -eq 1 ]; then
+    declare -i STANDBY_IS_PGPOOL_RUNNING=$(is_pgpool_running standby)
+    if [[ $STANDBY_IS_RUNNING -eq 1 && $STANDBY_IS_PGPOOL_RUNNING -eq 1 ]]; then
+      print_node_info standby 0
+      print_node_info standby 1
+    else
+      printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "standby" "master" "-" "-" "down"
+      printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "standby" "standby" "-" "-" "down"
+    fi
+  else
+    printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "standby" "master" "-" "-" "down"
+    printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "standby" "standby" "-" "-" "down"
   fi
 
 
@@ -458,7 +487,7 @@ function status() {
   fi
 
   printf "primary: %s operational: %s degraded: %s\n" \
-    "$(printf "${TEXT_COLOR}%-s \033[0m" $PRIMARY)" \
+    "$(printf "${TEXT_COLOR}%-s \033[0m" ${PRIMARY:-"-"})" \
     "$( ([ $HEALTH -eq 1 ] && printf "${SUCCESS_COLOR}%-s \033[0m" "true") || printf "${FAILED_COLOR}%-s \033[0m" "false")" \
     "$( ([ $DEGRADED -eq 0 ] && printf "${SUCCESS_COLOR}%-s\033[0m" "false") || printf "${FAILED_COLOR}%-s\033[0m" "true")"
 
@@ -499,8 +528,6 @@ function recovery() {
   fi
 
   print_h2 "Recovering $RECOVERY_TARGET node"
-
-  # docker-compose stop $RECOVERY_TARGET
 
   declare -i IS_DIRTY=$(is_dirty $RECOVERY_TARGET)
   if [ $IS_DIRTY -eq 1 ]; then
