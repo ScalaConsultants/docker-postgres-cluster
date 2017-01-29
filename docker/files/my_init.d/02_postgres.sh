@@ -43,7 +43,7 @@ function pgpool_start() {
   ln -sf /var/run/postgresql/.s.PGSQL.9898 /tmp/.s.PGSQL.9898
 
   if [ "$IMAGE_TYPE" = "master" ]; then
-    NODE=stadby
+    NODE=standby
   else
     NODE=master
   fi

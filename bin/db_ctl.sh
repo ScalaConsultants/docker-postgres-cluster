@@ -98,6 +98,20 @@ function is_in_recovery() {
   fi
 }
 
+function is_pgpool_running() {
+  [ "$PWD" != "$ROOT_DIR/docker" ] && cd_docker_dir
+  declare -i IS_RUNNING=$(is_running $1)
+  if [ $IS_RUNNING -eq 1 ]; then
+    declare -i IS_PGPOOL_PROC_RUNNING="$(docker-compose exec $1 bash -c "gosu postgres ps -A | grep -c pgpool" | tr -d '\r')"
+    declare -i IS_PGPOOL_SOCKET_EXIST="$(docker-compose exec $1 bash -c "([ -e /var/run/postgresql/.s.PGSQL.9898 ] && echo 1) || echo 0" | tr -d '\r')"
+    ([[ $IS_PGPOOL_PROC_RUNNING -gt 0 && $IS_PGPOOL_SOCKET_EXIST -eq 1 ]] && echo 1) || echo 0
+  else
+    echo 0
+  fi
+
+  [ "$OLDPWD" != "$ROOT_DIR/docker" ] && cd - >/dev/null
+}
+
 function detect_recovery_target() {
   [ "$PWD" != "$ROOT_DIR/docker" ] && cd_docker_dir
   declare -i MASTER_IS_RUNNING=$(is_running master)
@@ -130,6 +144,20 @@ function detect_recovery_target() {
   [ "$OLDPWD" != "$ROOT_DIR/docker" ] && cd - >/dev/null
 }
 
+function wait_for_pgpool() {
+  TIMEOUT=5
+  MAX_TRIES=50
+  while [[ "$MAX_TRIES" != "0" ]]; do
+    IS_RUNNING=$(is_pgpool_running $1)
+    if [ $IS_RUNNING -ne 1 ]; then
+      sleep $TIMEOUT
+    else
+      break
+    fi
+    MAX_TRIES=`expr "$MAX_TRIES" - 1`
+  done
+}
+
 function wait_for_db() {
   TIMEOUT=5
   MAX_TRIES=50
@@ -149,6 +177,20 @@ function wait_for_db() {
       else
         break
       fi
+    fi
+    MAX_TRIES=`expr "$MAX_TRIES" - 1`
+  done
+}
+
+function wait_for_db_shutdown() {
+  TIMEOUT=5
+  MAX_TRIES=50
+  while [[ "$MAX_TRIES" != "0" ]]; do
+    declare -i EXITED=$(docker-compose ps $1 | grep -c Exit)
+    if [ $EXISTS -ne 1 ]; then
+      sleep $TIMEOUT
+    else
+      break
     fi
     MAX_TRIES=`expr "$MAX_TRIES" - 1`
   done
@@ -234,11 +276,25 @@ function start() {
     docker-compose up -d master
     if [[ "$STANDBY_IS_IN_RECOVERY" = "t" ]]; then
       docker-compose up -d standby
+      (wait_for_pgpool standby && \
+        ( \
+        docker-compose exec master gosu postgres pcp_attach_node -w -n 1 && \
+        docker-compose exec standby gosu postgres pcp_attach_node -w -n 0 && \
+        docker-compose exec standby gosu postgres pcp_attach_node -w -n 1 \
+        ) \
+      ) || true
     fi
   elif [[ $STANDBY_TIMELINE -ge $MASTER_TIMELINE && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
     docker-compose up -d standby
     if [[ "$MASTER_IS_IN_RECOVERY" = "t" ]]; then
       docker-compose up -d master
+      (wait_for_pgpool master && \
+        ( \
+        docker-compose exec standby gosu postgres pcp_attach_node -w -n 0 && \
+        docker-compose exec master gosu postgres pcp_attach_node -w -n 1 && \
+        docker-compose exec master gosu postgres pcp_attach_node -w -n 0 \
+        ) \
+      ) || true
     fi
   fi
 
@@ -257,14 +313,32 @@ function stop() {
 
   if [[ $MASTER_IS_RUNNING -eq 1 && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
     if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+      docker-compose exec standby gosu postgres pcp_detach_node -w -n 1
+      docker-compose exec standby gosu postgres pcp_detach_node -w -n 0
+    fi
+
+    docker-compose exec master gosu postgres pcp_detach_node -w -n 1
+    docker-compose exec master gosu postgres pcp_detach_node -w -n 0
+
+    docker-compose stop master
+    if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+      wait_for_db_shutdown master && true
       docker-compose stop standby
     fi
-    docker-compose stop master
   elif [[ $STANDBY_IS_RUNNING -eq 1 && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
     if [ $MASTER_IS_RUNNING -eq 1 ]; then
+      docker-compose exec master gosu postgres pcp_detach_node -w -n 0
+      docker-compose exec master gosu postgres pcp_detach_node -w -n 1
+    fi
+
+    docker-compose exec standby gosu postgres pcp_detach_node -w -n 0
+    docker-compose exec standby gosu postgres pcp_detach_node -w -n 1
+
+    docker-compose stop standby
+    if [ $MASTER_IS_RUNNING -eq 1 ]; then
+      wait_for_db_shutdown standby && true
       docker-compose stop master
     fi
-    docker-compose stop standby
   fi
 
   docker-compose stop
@@ -289,7 +363,7 @@ function status() {
       MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_last_xlog_replay_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
     fi
   else
-    MASTER_DOCKER_OPTS="run --no-deps --rm -T --entrypoint bash master -c"
+    MASTER_DOCKER_OPTS="run --no-deps --rm --entrypoint bash master -c"
     MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
   fi
 
@@ -301,7 +375,7 @@ function status() {
       STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_last_xlog_replay_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
     fi
   else
-    STANDBY_DOCKER_OPTS="run --no-deps --rm -T --entrypoint bash standby -c"
+    STANDBY_DOCKER_OPTS="run --no-deps --rm --entrypoint bash standby -c"
     STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
   fi
 
@@ -329,47 +403,59 @@ function status() {
     "$(printf "${TEXT_COLOR}${STANDBY_TIMELINE}\033[0m")"
 
 
+  declare -i MASTER_IS_PGPOOL_RUNNING=$(is_pgpool_running master)
+  declare -i STANDBY_IS_PGPOOL_RUNNING=$(is_pgpool_running standby)
+
   print_h2 "Load balancers"
-  if [ $MASTER_IS_RUNNING -eq 1 ]; then
+  if [[ $MASTER_IS_RUNNING -eq 1 && $MASTER_IS_PGPOOL_RUNNING -eq 1 ]]; then
     print_node_info master 0
     print_node_info master 1
   fi
 
-  if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+  if [[ $STANDBY_IS_RUNNING -eq 1 && $STANDBY_IS_PGPOOL_RUNNING -eq 1 ]]; then
     print_node_info standby 0
     print_node_info standby 1
   fi
 
 
   print_h2 "Overall status"
-  if [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 1 ]]; then
-    DEGRADED=1
-    HEALTH=1
-  elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 0 ]]; then
-    DEGRADED=1
-    HEALTH=1
-  fi
-
-  if [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 0 ]]; then
-    HEALTH=0
-    if [[ $MASTER_TIMELINE -ne $STANDBY_TIMELINE ]]; then
-      DEGRADED=1
-    else
-      DEGRADED=0
-    fi
-  elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 1 ]]; then
-    HEALTH=1
-    if [[ $MASTER_TIMELINE -ne $STANDBY_TIMELINE ]]; then
-      DEGRADED=1
-    else
-      DEGRADED=0
-    fi
-  fi
-
   if [[ $MASTER_TIMELINE -ge $STANDBY_TIMELINE && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
     PRIMARY=master
   elif [[ $STANDBY_TIMELINE -ge $MASTER_TIMELINE && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
     PRIMARY=standby
+  fi
+
+  NODE_COUNT=0
+  if [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 1 ]]; then
+    DEGRADED=1
+    HEALTH=1
+    NODE_COUNT=1
+  elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 0 ]]; then
+    DEGRADED=1
+    HEALTH=1
+    NODE_COUNT=1
+  elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 1 ]]; then
+    HEALTH=1
+    NODE_COUNT=2
+  elif [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 0 ]]; then
+    HEALTH=0
+    NODE_COUNT=0
+  fi
+
+  if [[ $NODE_COUNT -eq 0 || $NODE_COUNT -eq 2 ]]; then
+    if [[ "$PRIMARY" = "master" && $MASTER_TIMELINE -ge $STANDBY_TIMELINE ]]; then
+      DEGRADED=0
+      if [[ "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
+        DEGRADED=1
+      fi
+    elif [[ "$PRIMARY" = "standby" && $MASTER_TIMELINE -le $STANDBY_TIMELINE ]]; then
+      DEGRADED=0
+      if [[ "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
+        DEGRADED=1
+      fi
+    else
+      DEGRADED=1
+    fi
   fi
 
   printf "primary: %s operational: %s degraded: %s\n" \
@@ -450,7 +536,14 @@ function recovery() {
   wait_for_db $RECOVERY_TARGET
 
   print_h2 "Attaching node."
-  docker-compose exec $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE
+  declare -i WORKING_NODE="$( ([ $RECOVERY_NODE -eq 1 ] && echo 0) || echo 1)"
+  (wait_for_pgpool $RECOVERY_TARGET && \
+    ( \
+    docker-compose exec $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
+    docker-compose exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
+    docker-compose exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $WORKING_NODE \
+    ) \
+  ) || true
   cd_root_dir
 }
 
