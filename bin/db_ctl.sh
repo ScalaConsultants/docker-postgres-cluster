@@ -4,6 +4,10 @@ ROOT_DIR=$(realpath "$(dirname $(realpath $0))/.." )
 
 export $(cat $ROOT_DIR/etc/env.sh)
 
+if [ "$DEBUG" = "1" ]; then
+  set -x
+fi
+
 # PREFIX="##"
 # H1_PREFIX=$PREFIX
 # H2_PREFIX=$PREFIX
@@ -59,10 +63,6 @@ function print_node_info() {
   cd_root_dir
 }
 
-if [ "$DEBUG" = "1" ]; then
-  set -x
-fi
-
 function cd_root_dir() {
   cd $ROOT_DIR > /dev/null
 }
@@ -99,6 +99,7 @@ function is_in_recovery() {
 }
 
 function detect_recovery_target() {
+  [ "$PWD" != "$ROOT_DIR/docker" ] && cd_docker_dir
   declare -i MASTER_IS_RUNNING=$(is_running master)
   declare -i STANDBY_IS_RUNNING=$(is_running standby)
 
@@ -112,39 +113,21 @@ function detect_recovery_target() {
     STANDBY_DOCKER_OPTS="exec standby bash -c"
   fi
 
+  declare -i MASTER_TIMELINE="$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+  declare -i STANDBY_TIMELINE="$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
 
-  declare -a MASTER_CONTROL_DATA="$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Time of latest checkpoint' | awk -F 'checkpoint:' '{ print \$2 }'")"
+  MASTER_STATE="$(docker-compose $MASTER_DOCKER_OPTS "gosu postgres pg_controldata | grep 'Database cluster state' | awk -F ':' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')"
+  STANDBY_STATE="$(docker-compose $STANDBY_DOCKER_OPTS "gosu postgres pg_controldata | grep 'Database cluster state' | awk -F ':' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')"
 
-  if [ "$MASTER_CONTROL_DATA" == "" ]; then
-    MASTER_CONTROL_DATA="1970-01-01"
-  fi
-
-  declare -i MASTER_CHECKPOINT="$(docker-compose $MASTER_DOCKER_OPTS "date -d '${MASTER_CONTROL_DATA}' '+%s' | tr -d '\n'")"
-
-  declare -a STANDBY_CONTROL_DATA=$(docker-compose $STANDBY_DOCKER_OPTS "gosu postgres pg_controldata | grep 'Time of latest checkpoint' | awk -F 'checkpoint:' '{ print \$2 }'")
-
-  if [ "$STANDBY_CONTROL_DATA" == "" ]; then
-    STANDBY_CONTROL_DATA="1970-01-01"
-  fi
-
-  declare -i STANDBY_CHECKPOINT="$(docker-compose $STANDBY_DOCKER_OPTS "date -d '$STANDBY_CONTROL_DATA' '+%s' | tr -d '\n'")"
-
-  if [ $MASTER_CHECKPOINT -eq $STANDBY_CHECKPOINT ]; then
-    MASTER_STATE="$(docker-compose $MASTER_DOCKER_OPTS "gosu postgres pg_controldata | grep 'Database cluster state' | awk -F ':' '{ print \$2; }' | sed -e 's/^[ \t]*//'" | tr -d '\r')"
-    STANDBY_STATE="$(docker-compose $MASTER_DOCKER_OPTS "gosu postgres pg_controldata | grep 'Database cluster state' | awk -F ':' '{ print \$2; }' | sed -e 's/^[ \t]*//'" | tr -d '\r')"
-
-    if [[ "${MASTER_STATE}" == "in production" && $STANDBY_IS_RUNNING -eq 0 ]]; then
-      echo 1
-    elif [[ "${STANDBY_STATE}" == "in production" && $MASTER_IS_RUNNING -eq 0 ]]; then
-      echo 0
-    else
-      echo -1
-    fi
-  elif [ $MASTER_CHECKPOINT -lt $STANDBY_CHECKPOINT ]; then
-    echo 0
-  elif [ $MASTER_CHECKPOINT -gt $STANDBY_CHECKPOINT ]; then
+  if [[ "${MASTER_STATE}" == "in production" && $STANDBY_IS_RUNNING -eq 0 && $MASTER_TIMELINE -ge $STANDBY_TIMELINE ]]; then
     echo 1
+  elif [[ "${STANDBY_STATE}" == "in production" && $MASTER_IS_RUNNING -eq 0 && $STANDBY_TIMELINE -ge $MASTER_TIMELINE ]]; then
+    echo 0
+  else
+    echo -1
   fi
+
+  [ "$OLDPWD" != "$ROOT_DIR/docker" ] && cd - >/dev/null
 }
 
 function wait_for_db() {
@@ -271,22 +254,29 @@ function status() {
     STANDBY_XLOG_LOCATION=$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep 'Latest checkpoint location:'  | awk -F 'location:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')
   fi
 
+  declare -i MASTER_TIMELINE="$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+  declare -i STANDBY_TIMELINE="$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+
+
   printf "\033[1A"
   print_h2 "Cluster nodes"
 
-  printf "%s -- running: %s dirty: %s recovery: %s location: %s\n" \
+  printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
     "$(printf "${TEXT_COLOR}%-8s\033[0m" "master")" \
     "$(([ $MASTER_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
     "$( ([ $MASTER_IS_DIRTY -eq 1 ] && printf "${FAILED_COLOR}%-6s\033[0m" "true") || printf "${SUCCESS_COLOR}%-6s\033[0m" "false")" \
     "$(([ "$MASTER_IS_IN_RECOVERY" = "t" ] && printf "${TEXT_COLOR}%-6s\033[0m" "true") || printf "${TEXT_COLOR}%-6s\033[0m" "false")" \
-    "$(printf "${TEXT_COLOR}${MASTER_XLOG_LOCATION}\033[0m")"
+    "$(printf "${TEXT_COLOR}${MASTER_XLOG_LOCATION} \033[0m")" \
+    "$(printf "${TEXT_COLOR}${MASTER_TIMELINE}\033[0m")"
 
-  printf "%s -- running: %s dirty: %s recovery: %s location: %s\n" \
+  printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
     "$(printf "${TEXT_COLOR}%-8s\033[0m" "standby")" \
     "$(([ $STANDBY_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
     "$( ([ $STANDBY_IS_DIRTY -eq 1 ] && printf "${FAILED_COLOR}%-6s\033[0m" "true") || printf "${SUCCESS_COLOR}%-6s\033[0m" "false")" \
     "$(([ "$STANDBY_IS_IN_RECOVERY" = "t" ] && printf "${TEXT_COLOR}%-6s\033[0m" "true") || printf "${TEXT_COLOR}%-6s\033[0m" "false")" \
-    "$(printf "${TEXT_COLOR}${STANDBY_XLOG_LOCATION}\033[0m")"
+    "$(printf "${TEXT_COLOR}${STANDBY_XLOG_LOCATION} \033[0m")" \
+    "$(printf "${TEXT_COLOR}${STANDBY_TIMELINE}\033[0m")"
+
 
   print_h2 "Load balancers"
   if [ $MASTER_IS_RUNNING -eq 1 ]; then
@@ -298,6 +288,42 @@ function status() {
     print_node_info standby 0
     print_node_info standby 1
   fi
+
+
+
+  print_h2 "Overall status"
+  if [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 1 ]]; then
+    DEGRADED=1
+    HEALTH=1
+  elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 0 ]]; then
+    DEGRADED=1
+    HEALTH=1
+  fi
+
+  if [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 0 ]]; then
+    HEALTH=0
+    if [[ $MASTER_TIMELINE -ne $STANDBY_TIMELINE ]]; then
+      DEGRADED=1
+    fi
+  elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 1 ]]; then
+    HEALTH=1
+    if [[ $MASTER_TIMELINE -ne $STANDBY_TIMELINE ]]; then
+      DEGRADED=1
+    else
+      DEGRADED=0
+    fi
+  fi
+
+  if [[ $MASTER_TIMELINE -ge $STANDBY_TIMELINE && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
+    PRIMARY=master
+  elif [[ $STANDBY_TIMELINE -ge $MASTER_TIMELINE && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
+    PRIMARY=standby
+  fi
+
+  printf "primary: %s operational: %s degraded: %s\n" \
+  "$(printf "${TEXT_COLOR}%-s \033[0m" $PRIMARY)" \
+  "$( ([ $HEALTH -eq 1 ] && printf "${SUCCESS_COLOR}%-s \033[0m" "true") || printf "${FAILED_COLOR}%-s \033[0m" "false")" \
+  "$( ([ $DEGRADED -eq 0 ] && printf "${SUCCESS_COLOR}%-s\033[0m" "false") || printf "${FAILED_COLOR}%-s\033[0m" "true")"
 
   cd_root_dir
 }
