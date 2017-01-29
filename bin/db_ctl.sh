@@ -90,7 +90,7 @@ function is_in_recovery() {
     docker-compose exec $1 bash -c "gosu postgres psql -Atnxc 'select pg_is_in_recovery();' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r'
   else
     declare -a DB_STATE="$(docker-compose run --no-deps --rm -T --entrypoint bash $1 -c "gosu postgres pg_controldata | grep 'Database cluster state:'  | awk -F 'state:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')"
-    if [ "$DB_STATE" = "in archive recovery" ]; then
+    if [[ "$DB_STATE" = "in archive recovery" || "$DB_STATE" = "shut down in recovery" ]]; then
       echo 't'
     else
       echo 'f'
@@ -248,6 +248,25 @@ function start() {
 function stop() {
   print_h1 "Stopping PostgreSQL cluster..."
   cd_docker_dir
+  declare -i MASTER_IS_RUNNING=$(is_running master)
+  declare -i MASTER_IS_DIRTY=$(is_dirty master)
+  declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+  declare -i STANDBY_IS_RUNNING=$(is_running standby)
+  declare -i STANDBY_IS_DIRTY=$(is_dirty standby)
+  declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+
+  if [[ $MASTER_IS_RUNNING -eq 1 && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
+    if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+      docker-compose stop standby
+    fi
+    docker-compose stop master
+  elif [[ $STANDBY_IS_RUNNING -eq 1 && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
+    if [ $MASTER_IS_RUNNING -eq 1 ]; then
+      docker-compose stop master
+    fi
+    docker-compose stop standby
+  fi
+
   docker-compose stop
   cd_root_dir
 }
@@ -335,6 +354,8 @@ function status() {
     HEALTH=0
     if [[ $MASTER_TIMELINE -ne $STANDBY_TIMELINE ]]; then
       DEGRADED=1
+    else
+      DEGRADED=0
     fi
   elif [[ $MASTER_IS_RUNNING -eq 1 && $STANDBY_IS_RUNNING -eq 1 ]]; then
     HEALTH=1

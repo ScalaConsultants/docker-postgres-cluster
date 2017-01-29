@@ -42,7 +42,13 @@ function pgpool_start() {
 
   ln -sf /var/run/postgresql/.s.PGSQL.9898 /tmp/.s.PGSQL.9898
 
-  wait_for_db || true
+  if [ "$IMAGE_TYPE" = "master" ]; then
+    NODE=stadby
+  else
+    NODE=master
+  fi
+
+  (ping -c 4 $NODE && wait_for_db) || true
   gosu postgres pgpool -n
 }
 
