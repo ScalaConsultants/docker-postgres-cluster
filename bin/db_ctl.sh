@@ -196,10 +196,10 @@ function init() {
   sleep 10
   enable_ssh_auth root
   enable_ssh_auth postgres
-  docker-compose down
+  docker-compose stop
 
   print_h2 "Starting PostgreSQL cluster."
-  docker-compose up -d
+  docker-compose start
   wait_for_db
   docker-compose exec -T master gosu postgres psql -c "create table if not exists rewindtest (t text);" postgres
   cd_root_dir
@@ -208,14 +208,47 @@ function init() {
 function start() {
   print_h1 "Starting PostgreSQL cluster..."
   cd_docker_dir
-  docker-compose up -d
+  declare -i MASTER_IS_RUNNING=$(is_running master)
+  declare -i MASTER_IS_DIRTY=$(is_dirty master)
+  declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+  declare -i STANDBY_IS_RUNNING=$(is_running standby)
+  declare -i STANDBY_IS_DIRTY=$(is_dirty standby)
+  declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+
+  if [ $MASTER_IS_RUNNING -eq 1 ]; then
+    MASTER_DOCKER_OPTS="exec master bash -c"
+  else
+    MASTER_DOCKER_OPTS="run --no-deps --rm -T --entrypoint bash master -c"
+  fi
+
+  if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+    STANDBY_DOCKER_OPTS="exec standby bash -c"
+  else
+    STANDBY_DOCKER_OPTS="run --no-deps --rm -T --entrypoint bash standby -c"
+  fi
+
+  declare -i MASTER_TIMELINE="$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+  declare -i STANDBY_TIMELINE="$(docker-compose ${STANDBY_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
+
+  if [[ $MASTER_TIMELINE -ge $STANDBY_TIMELINE && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
+    docker-compose up -d master
+    if [[ "$STANDBY_IS_IN_RECOVERY" = "t" ]]; then
+      docker-compose up -d standby
+    fi
+  elif [[ $STANDBY_TIMELINE -ge $MASTER_TIMELINE && "$STANDBY_IS_IN_RECOVERY" = "f" ]]; then
+    docker-compose up -d standby
+    if [[ "$MASTER_IS_IN_RECOVERY" = "t" ]]; then
+      docker-compose up -d master
+    fi
+  fi
+
   cd_root_dir
 }
 
 function stop() {
   print_h1 "Stopping PostgreSQL cluster..."
   cd_docker_dir
-  docker-compose down
+  docker-compose stop
   cd_root_dir
 }
 
@@ -230,7 +263,6 @@ function status() {
   declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
 
   if [ $MASTER_IS_RUNNING -eq 1 ]; then
-    MASTER_IS_RUNNING_STR="${SUCCESS_COLOR}true\033[0m"
     MASTER_DOCKER_OPTS="exec master bash -c"
     if [ "$MASTER_IS_IN_RECOVERY" = "f" ]; then
       MASTER_XLOG_LOCATION=$(docker-compose ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_current_xlog_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
@@ -290,7 +322,6 @@ function status() {
   fi
 
 
-
   print_h2 "Overall status"
   if [[ $MASTER_IS_RUNNING -eq 0 && $STANDBY_IS_RUNNING -eq 1 ]]; then
     DEGRADED=1
@@ -321,9 +352,9 @@ function status() {
   fi
 
   printf "primary: %s operational: %s degraded: %s\n" \
-  "$(printf "${TEXT_COLOR}%-s \033[0m" $PRIMARY)" \
-  "$( ([ $HEALTH -eq 1 ] && printf "${SUCCESS_COLOR}%-s \033[0m" "true") || printf "${FAILED_COLOR}%-s \033[0m" "false")" \
-  "$( ([ $DEGRADED -eq 0 ] && printf "${SUCCESS_COLOR}%-s\033[0m" "false") || printf "${FAILED_COLOR}%-s\033[0m" "true")"
+    "$(printf "${TEXT_COLOR}%-s \033[0m" $PRIMARY)" \
+    "$( ([ $HEALTH -eq 1 ] && printf "${SUCCESS_COLOR}%-s \033[0m" "true") || printf "${FAILED_COLOR}%-s \033[0m" "false")" \
+    "$( ([ $DEGRADED -eq 0 ] && printf "${SUCCESS_COLOR}%-s\033[0m" "false") || printf "${FAILED_COLOR}%-s\033[0m" "true")"
 
   cd_root_dir
 }
