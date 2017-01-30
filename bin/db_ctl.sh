@@ -215,8 +215,11 @@ function init() {
     declare -i STANDBY_FOLDER_EXIST="$(docker-machine ssh ${STANDBY_NODE} "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0")"
 
     if [ "$1" = "-f" ]; then
+      printf "\033[1A"
+      print_h2 "Shuting down existing cluster"
+      $DOCKER_COMPOSE_CMD down
+
       if [[ $MASTER_FOLDER_EXIST -eq 1 || $STANDBY_FOLDER_EXIST -eq 1 ]]; then
-        printf "\033[1A"
         print_h2 "Moving existing data folders"
         TS=$(date +%Y%m%d-%H%M%S)
       fi
@@ -237,10 +240,12 @@ function init() {
     declare -i DATA_FOLDER_EXIST="$( ([ -d $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME ] && echo 1) || echo 0)"
     if [ $DATA_FOLDER_EXIST -eq 1 ]; then
       if [ "$1" = "-f" ]; then
-        TS=$(date +%Y%m%d-%H%M%S)
         printf "\033[1A"
+        print_h2 "Shuting down existing cluster"
+        $DOCKER_COMPOSE_CMD down
+
         print_h2 "Moving existing data folders"
-        mv -vf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME-$TS
+        mv -vf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME-$(date +%Y%m%d-%H%M%S)
       else
         echo "Unable to initialize cluster."
         echo "Data folders already exists (use -f to force removal)."
@@ -249,10 +254,6 @@ function init() {
     fi
   fi
 
-  [[ $MASTER_FOLDER_EXIST -eq 0 && $STANDBY_FOLDER_EXIST -eq 0 && $DATA_FOLDER_EXIST -eq 0 ]] && printf "\033[1A"
-
-  print_h2 "Shuting down existing cluster"
-  $DOCKER_COMPOSE_CMD down
 
   print_h2 "Building image"
   $DOCKER_COMPOSE_CMD build
@@ -576,10 +577,20 @@ function recovery() {
 
   print_h2 "Recovering $RECOVERY_TARGET node"
 
-  declare -i IS_DIRTY=$(is_dirty $RECOVERY_TARGET)
-  if [ $IS_DIRTY -eq 1 ]; then
-    print_h2 "Performing clean shut down on $RECOVERY_TARGET node"
-    $DOCKER_COMPOSE_CMD run --no-deps --rm --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_ctl -D $PGDATA -w start && gosu postgres pg_ctl -D $PGDATA -w stop"
+  if [ "$1" = "-f" ]; then
+    print_h2 "Removing old data directory"
+    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rm -rf $PGDATA/*"
+
+    print_h2 "Syncing data directory"
+    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_basebackup -D $PGDATA -w -X stream -d 'host=$RECOVERY_SOURCE port=$PGPORT user=$REPLICATION_USER password=$REPLICATION_PASSWORD'"
+    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chmod 0700 $PGDATA"
+    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chown -R postgres:postgres $PGDATA"
+  else
+    declare -i IS_DIRTY=$(is_dirty $RECOVERY_TARGET)
+    if [ $IS_DIRTY -eq 1 ]; then
+      print_h2 "Performing clean shut down on $RECOVERY_TARGET node"
+      $DOCKER_COMPOSE_CMD run --no-deps --rm --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_ctl -D $PGDATA -w start && gosu postgres pg_ctl -D $PGDATA -w stop"
+    fi
   fi
 
   print_h2 "Syncing pg_xlog"
@@ -588,8 +599,10 @@ function recovery() {
   print_h2 "Syncing archive logs"
   $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rsync -avz $RECOVERY_SOURCE:$CLUSTER_ARCHIVE/ $CLUSTER_ARCHIVE/"
 
-  print_h2 "Syncing data directory"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_rewind --target-pgdata=$PGDATA --source-server='host=$RECOVERY_SOURCE port=$PGPORT dbname=postgres user=$POSTGRES_USER  password=$POSTGRES_PASSWORD'"
+  if [ "$1" != "-f" ]; then
+    print_h2 "Syncing data directory"
+    $DOCKER_COMPOSE_CMD run --no-deps --rm --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_rewind --target-pgdata=$PGDATA --source-server='host=$RECOVERY_SOURCE port=$PGPORT dbname=postgres user=$POSTGRES_USER  password=$POSTGRES_PASSWORD'"
+  fi
 
 
   print_h2 "Configuring $RECOVERY_TARGET node"
@@ -618,64 +631,6 @@ function recovery() {
     $DOCKER_COMPOSE_CMD exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $WORKING_NODE \
     ) \
   ) || true
-  cd_root_dir
-}
-
-function full_recovery() {
-  print_h1 "Starting $(echo $FUNCNAME | awk '{ gsub(/_/, " ", $0); print; }')..."
-  cd_docker_dir
-
-  declare -i RECOVERY_NODE=$(detect_recovery_target)
-  if [ $RECOVERY_NODE -eq 0 ]; then
-    RECOVERY_SOURCE=standby
-    RECOVERY_TARGET=master
-  elif [ $RECOVERY_NODE -eq 1 ]; then
-    RECOVERY_SOURCE=master
-    RECOVERY_TARGET=standby
-  else
-    echo "Nothing to recover. Exiting..."
-    exit 0
-  fi
-
-  printf "\033[1A"
-  print_h2 "Preparing for replication ($RECOVERY_SOURCE -> $RECOVERY_TARGET)."
-
-  [ "$(is_running $RECOVERY_TARGET)" = "1" ] && $DOCKER_COMPOSE_CMD stop $RECOVERY_TARGET
-  [ "$(is_running $RECOVERY_SOURCE)" = "0" ] && $DOCKER_COMPOSE_CMD start $RECOVERY_SOURCE
-
-  print_h2 "Removing old data directory"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rm -rf $PGDATA/*"
-
-  print_h2 "Syncing data directory"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "gosu postgres pg_basebackup -D $PGDATA -w -X stream -d 'host=$RECOVERY_SOURCE port=$PGPORT user=$REPLICATION_USER password=$REPLICATION_PASSWORD'"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chmod 0700 $PGDATA"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chown -R postgres:postgres $PGDATA"
-
-  print_h2 "Syncing pg_xlog"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rsync -avz $RECOVERY_SOURCE:$PGDATA/pg_xlog/ $PGDATA/pg_xlog/"
-
-  print_h2 "Syncing archive logs"
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "rsync -avz $RECOVERY_SOURCE:$CLUSTER_ARCHIVE/ $CLUSTER_ARCHIVE/"
-
-  print_h2 "Configuring recovery target ($RECOVERY_TARGET)."
-  if [ $RECOVERY_SOURCE == "master" ]; then
-    RECOVERY_FILE=$($DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "(test -f $PGDATA/recovery.done && cat $PGDATA/recovery.done) || cat $PGDATA/recovery.conf")
-    NEW_RECOVERY_FILE=$(echo "$RECOVERY_FILE" | sed -e "s/host=$RECOVERY_TARGET/host=$RECOVERY_SOURCE/")
-    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash -e "NEW_RECOVERY_FILE=$NEW_RECOVERY_FILE" $RECOVERY_TARGET -c "echo \"$NEW_RECOVERY_FILE\" > $PGDATA/recovery.conf"
-    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chown postgres:postgres $PGDATA/recovery.conf"
-  else
-    RECOVERY_FILE=$($DOCKER_COMPOSE_CMD exec $RECOVERY_SOURCE bash -c "(test -f $PGDATA/recovery.done && cat $PGDATA/recovery.done) || cat $PGDATA/recovery.conf")
-    NEW_RECOVERY_FILE=$(echo "$RECOVERY_FILE" | sed -e "s/host=$RECOVERY_TARGET/host=$RECOVERY_SOURCE/")
-    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash -e "NEW_RECOVERY_FILE=$NEW_RECOVERY_FILE" $RECOVERY_TARGET -c "echo \"$NEW_RECOVERY_FILE\" > $PGDATA/recovery.conf"
-    $DOCKER_COMPOSE_CMD run --no-deps --rm -T --entrypoint bash $RECOVERY_TARGET -c "chown postgres:postgres $PGDATA/recovery.conf"
-  fi
-
-  print_h2 "Starting recovery target ($RECOVERY_TARGET)."
-  $DOCKER_COMPOSE_CMD start $RECOVERY_TARGET
-  wait_for_db $RECOVERY_TARGET
-
-  print_h2 "Attaching node."
-  $DOCKER_COMPOSE_CMD exec -T $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE
   cd_root_dir
 }
 
@@ -727,25 +682,8 @@ function failback() {
   cd_root_dir
 }
 
-function full_failback() {
-  print_h1 "Starting $(echo $FUNCNAME | awk '{ gsub(/_/, " ", $0); print; }')..."
-  cd_docker_dir
-  $DOCKER_COMPOSE_CMD stop standby
-  $DOCKER_COMPOSE_CMD exec -T master gosu postgres pg_ctl promote -w
-  sleep 5
-  $DOCKER_COMPOSE_CMD run --no-deps --rm -T standby bash -c "rm -rf $PGDATA/*"
-  $DOCKER_COMPOSE_CMD start standby
-  wait_for_db "standby"
-  $DOCKER_COMPOSE_CMD exec -T master gosu postgres pcp_attach_node -w -n 1
-  $DOCKER_COMPOSE_CMD exec -T master gosu postgres psql -c "insert into rewindtest values ('in master / failback')" postgres
-  $DOCKER_COMPOSE_CMD exec standby gosu postgres psql -tnAc "select * from rewindtest;" postgres
-  $DOCKER_COMPOSE_CMD exec master gosu postgres psql -tnxc "select pg_is_in_recovery();" postgres
-  $DOCKER_COMPOSE_CMD exec standby gosu postgres psql -tnxc "select pg_is_in_recovery();" postgres
-  cd_root_dir
-}
-
 function set_docker_mode() {
-  declare -i NODE_COUNT=$(docker-machinea ls -q 2>/dev/null | grep -cE "^${MASTER_NODE}|${STANDBY_NODE}$")
+  declare -i NODE_COUNT=$(docker-machine ls -q 2>/dev/null | grep -cE "^${MASTER_NODE}|${STANDBY_NODE}$")
   if [ $NODE_COUNT -eq 2 ]; then
     RUNNING_ON_SWARM=1
   else
