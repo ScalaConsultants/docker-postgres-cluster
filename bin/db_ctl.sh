@@ -77,7 +77,7 @@ function is_dirty() {
   fi
   STATE="$(docker-compose $DOCKER_OPTS "gosu postgres pg_controldata | grep 'Database cluster state' | awk -F ':' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2; }'" | tr -d '\r')"
 
-  if [[ $IS_RUNNING -eq 0 && "${STATE}" = "shut down in production" ]]; then
+  if [[ $IS_RUNNING -eq 0 && "${STATE}" = "shut down" ]]; then
     echo 0
   elif [[ $IS_RUNNING -eq 0 && "${STATE}" = "shut down in recovery" ]]; then
     echo 0
