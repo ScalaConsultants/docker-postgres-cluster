@@ -1,0 +1,64 @@
+version: '2'
+services:
+  master:
+    container_name: ${COMPOSE_PROJECT_NAME}-master
+    hostname: master
+    image: postgres-cluster:latest
+    build: .
+    expose:
+      - "5432"
+    env_file:
+      - ../etc/env.sh
+    environment:
+      - "IMAGE_TYPE=master"
+    volumes:
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/etc/ssh:/etc/ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/root/ssh:/root/.ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgres/ssh:/var/lib/postgresql/.ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgres/archive:/var/lib/postgresql/archive
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgresql/data:/var/lib/postgresql/data
+    dns_search: .
+    networks:
+      backend:
+        ipv4_address: ${MASTER_IP}
+      frontend:
+        aliases:
+          - pool
+
+  standby:
+    container_name: ${COMPOSE_PROJECT_NAME}-standby
+    hostname: standby
+    image: postgres-cluster:latest
+    build: .
+    expose:
+      - "5432"
+    env_file:
+      - ../etc/env.sh
+    environment:
+      - "IMAGE_TYPE=standby"
+    volumes:
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/etc/ssh:/etc/ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/root/ssh:/root/.ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgres/ssh:/var/lib/postgresql/.ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgres/archive:/var/lib/postgresql/archive
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgresql/data:/var/lib/postgresql/data
+    dns_search: .
+    networks:
+      backend:
+        ipv4_address: ${STANDBY_IP}
+      frontend:
+        aliases:
+          - pool
+
+networks:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${POSTGRES_BACKEND_SUBNET}
+
+  frontend:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${POSTGRES_FRONTEND_SUBNET}

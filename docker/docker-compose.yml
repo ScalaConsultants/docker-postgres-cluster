@@ -3,7 +3,7 @@ services:
   master:
     container_name: ${COMPOSE_PROJECT_NAME}-master
     hostname: master
-    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres:latest
+    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres-cluster:latest
     build: .
     expose:
       - "5432"
@@ -11,6 +11,7 @@ services:
       - ../etc/env.sh
     environment:
       - "IMAGE_TYPE=master"
+      - "affinity:container!=standby"
       - "constraint:node==${MASTER_NODE}"
     volumes:
       - ${MASTER_VOLUME_ETC_SSH}:/etc/ssh
@@ -29,7 +30,7 @@ services:
   standby:
     container_name: ${COMPOSE_PROJECT_NAME}-standby
     hostname: standby
-    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres:latest
+    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres-cluster:latest
     expose:
       - "5432"
     env_file:
