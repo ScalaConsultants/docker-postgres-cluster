@@ -567,6 +567,7 @@ function recovery() {
   (wait_for_pgpool $RECOVERY_TARGET && \
     ( \
     docker-compose exec $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
+    docker-compose exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
     docker-compose exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $WORKING_NODE \
     ) \
   ) || true
@@ -670,9 +671,12 @@ function failback() {
   wait_for_db "standby"
 
   print_h2 "Attaching standby node"
-
-
-  (wait_for_pgpool standby && docker-compose exec -T master gosu postgres pcp_attach_node -w -n 1) || true
+  (wait_for_pgpool standby && \
+    ( \
+    docker-compose exec master gosu postgres pcp_attach_node -w -n 0 && \
+    docker-compose exec master gosu postgres pcp_attach_node -w -n 1 \
+    ) \
+  ) || true
   cd_root_dir
 }
 
