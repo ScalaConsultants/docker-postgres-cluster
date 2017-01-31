@@ -684,7 +684,7 @@ function failback() {
 
 function set_docker_mode() {
   declare -i NODE_COUNT=$(docker-machine ls -q 2>/dev/null | grep -cE "^${MASTER_NODE}|${STANDBY_NODE}$")
-  if [ $NODE_COUNT -eq 2 ]; then
+  if [[ $NODE_COUNT -eq 2 && "$DOCKER_MACHINE_NAME" != "" ]]; then
     RUNNING_ON_SWARM=1
   else
     RUNNING_ON_SWARM=0
