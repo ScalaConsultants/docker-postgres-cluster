@@ -122,6 +122,10 @@ function is_alive() {
   (ping -c 2 $NODE > /dev/null 2>&1 && echo 1) || echo 0
 }
 
+function is_existing() {
+  docker-compose ps | grep -c master
+}
+
 function detect_recovery_target() {
   [ "$PWD" != "$ROOT_DIR/docker" ] && cd_docker_dir
   declare -i MASTER_IS_RUNNING=$(is_running master)
@@ -209,6 +213,10 @@ function enable_ssh_auth() {
 function init() {
   print_h1 "Initializing PostgreSQL cluster"
   cd_docker_dir
+
+
+  # TODO add pre-checks
+
 
   if [ $RUNNING_ON_SWARM -eq 1 ]; then
     declare -i MASTER_FOLDER_EXIST="$(docker-machine ssh ${MASTER_NODE} "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0")"
@@ -545,14 +553,24 @@ function status() {
 function failover() {
   print_h1 "Starting $FUNCNAME..."
   cd_docker_dir
-  $DOCKER_COMPOSE_CMD exec -T master gosu postgres psql -c "insert into rewindtest values ('in master');" postgres
-  $DOCKER_COMPOSE_CMD exec -T standby gosu postgres psql -tnAc "select * from rewindtest;" postgres
-  $DOCKER_COMPOSE_CMD kill master
-  $DOCKER_COMPOSE_CMD exec -T standby gosu postgres pg_ctl promote -w
-  sleep 5
-  $DOCKER_COMPOSE_CMD exec -T standby gosu postgres psql -c "insert into rewindtest values ('in standby')" postgres
-  $DOCKER_COMPOSE_CMD exec -T standby gosu postgres psql -tnAc "select * from rewindtest;" postgres
-  $DOCKER_COMPOSE_CMD exec -T standby gosu postgres psql -tnxc "select pg_is_in_recovery();" postgres
+
+
+  # TODO add pre-checks
+
+
+  printf "\033[1A"
+  print_h2 "Stopping load balancer on standby node"
+  $DOCKER_COMPOSE_CMD exec standby gosu postgres pcp_detach_node -w -n 0
+  $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_detach_node -w -n 0
+  sleep 20
+  docker network disconnect $(echo $COMPOSE_PROJECT_NAME | sed -e 's/\-//')_frontend ${COMPOSE_PROJECT_NAME}-master
+  $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_stop_pgpool -w
+
+  print_h2 "Stopping master node"
+  $DOCKER_COMPOSE_CMD exec master gosu postgres pg_ctl -D $PGDATA -w stop
+  $DOCKER_COMPOSE_CMD stop master
+  $DOCKER_COMPOSE_CMD rm -f master
+
   cd_root_dir
 }
 
@@ -576,6 +594,8 @@ function recovery() {
   fi
 
   print_h2 "Recovering $RECOVERY_TARGET node"
+  declare -i EXISTS=$(is_existing $RECOVERY_TARGET)
+  [ $EXISTS -eq 1 ] && $DOCKER_COMPOSE_CMD rm -f $RECOVERY_TARGET
 
   if [ "$1" = "-f" ]; then
     print_h2 "Removing old data directory"
@@ -626,9 +646,8 @@ function recovery() {
   declare -i WORKING_NODE="$( ([ $RECOVERY_NODE -eq 1 ] && echo 0) || echo 1)"
   (wait_for_pgpool $RECOVERY_TARGET && \
     ( \
-    $DOCKER_COMPOSE_CMD exec $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
-    $DOCKER_COMPOSE_CMD exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $RECOVERY_NODE && \
-    $DOCKER_COMPOSE_CMD exec $RECOVERY_TARGET gosu postgres pcp_attach_node -w -n $WORKING_NODE \
+    sleep 10 && \
+    $DOCKER_COMPOSE_CMD exec $RECOVERY_SOURCE gosu postgres pcp_attach_node -w -n $RECOVERY_NODE \
     ) \
   ) || true
   cd_root_dir
@@ -644,16 +663,16 @@ function failback() {
 
   printf "\033[1A"
   print_h2 "Stopping load balancer on standby node"
+  $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_detach_node -w -n 1
+  $DOCKER_COMPOSE_CMD exec standby gosu postgres pcp_detach_node -w -n 1
+  sleep 20
+  docker network disconnect $(echo $COMPOSE_PROJECT_NAME | sed -e 's/\-//')_frontend ${COMPOSE_PROJECT_NAME}-standby
   $DOCKER_COMPOSE_CMD exec standby gosu postgres pcp_stop_pgpool -w
 
   print_h2 "Stopping standby node"
-  $DOCKER_COMPOSE_CMD exec -T standby gosu postgres pg_ctl -D $PGDATA -w stop
+  $DOCKER_COMPOSE_CMD exec standby gosu postgres pg_ctl -D $PGDATA -w stop
   $DOCKER_COMPOSE_CMD stop standby
   $DOCKER_COMPOSE_CMD rm -f standby
-
-  print_h2 "Promoting master node"
-  $DOCKER_COMPOSE_CMD exec -T master gosu postgres pg_ctl promote -w
-  sleep 5
 
   print_h2 "Syncing archive logs"
   $DOCKER_COMPOSE_CMD run --no-deps --rm -T standby rsync -avz master:$CLUSTER_ARCHIVE/ $CLUSTER_ARCHIVE/
@@ -675,7 +694,7 @@ function failback() {
   print_h2 "Attaching standby node"
   (wait_for_pgpool standby && \
     ( \
-    $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_attach_node -w -n 0 && \
+    sleep 10 && \
     $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_attach_node -w -n 1 \
     ) \
   ) || true
