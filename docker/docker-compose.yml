@@ -25,7 +25,7 @@ services:
         ipv4_address: ${MASTER_IP}
       frontend:
         aliases:
-          - pool
+          - ${PGPOOL_ALIAS}
 
   standby:
     container_name: ${COMPOSE_PROJECT_NAME}-standby
@@ -51,7 +51,7 @@ services:
         ipv4_address: ${STANDBY_IP}
       frontend:
         aliases:
-          - pool
+          - ${PGPOOL_ALIAS}
 
 networks:
   backend:
