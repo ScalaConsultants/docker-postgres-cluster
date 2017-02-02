@@ -214,10 +214,6 @@ function init() {
   print_h1 "Initializing PostgreSQL cluster"
   cd_docker_dir
 
-
-  # TODO add pre-checks
-
-
   if [ $RUNNING_ON_SWARM -eq 1 ]; then
     declare -i MASTER_FOLDER_EXIST="$(docker-machine ssh ${MASTER_NODE} "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0")"
     declare -i STANDBY_FOLDER_EXIST="$(docker-machine ssh ${STANDBY_NODE} "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0")"
@@ -297,6 +293,19 @@ function init() {
 function start() {
   print_h1 "Starting PostgreSQL cluster..."
   cd_docker_dir
+
+  if [[ $MASTER_IS_RUNNING -eq 0 && \
+        $STANDBY_IS_RUNNING -eq 0 ]]; then
+    STOP_READY=1
+  else
+    STOP_READY=0
+  fi
+
+  if [ $STOP_READY -ne 1 ]; then
+    echo "Unable to stop. Exiting..."
+    exit 1
+  fi
+
   declare -i MASTER_IS_RUNNING=$(is_running master)
   declare -i MASTER_IS_DIRTY=$(is_dirty master)
   declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
@@ -337,12 +346,25 @@ function start() {
 function stop() {
   print_h1 "Stopping PostgreSQL cluster..."
   cd_docker_dir
+
   declare -i MASTER_IS_RUNNING=$(is_running master)
   declare -i MASTER_IS_DIRTY=$(is_dirty master)
   declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
   declare -i STANDBY_IS_RUNNING=$(is_running standby)
   declare -i STANDBY_IS_DIRTY=$(is_dirty standby)
   declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+
+  if [[ $MASTER_IS_RUNNING -eq 1 || \
+        $STANDBY_IS_RUNNING -eq 1 ]]; then
+    STOP_READY=1
+  else
+    STOP_READY=0
+  fi
+
+  if [ $STOP_READY -ne 1 ]; then
+    echo "Unable to stop. Exiting..."
+    exit 1
+  fi
 
   if [[ $MASTER_IS_RUNNING -eq 1 && "$MASTER_IS_IN_RECOVERY" = "f" ]]; then
     if [ $STANDBY_IS_RUNNING -eq 1 ]; then
@@ -554,9 +576,24 @@ function failover() {
   print_h1 "Starting $FUNCNAME..."
   cd_docker_dir
 
+  declare -i MASTER_IS_RUNNING=$(is_running master)
+  declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+  declare -i STANDBY_IS_RUNNING=$(is_running standby)
+  declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
 
-  # TODO add pre-checks
+  if [[ $MASTER_IS_RUNNING -eq 1 && \
+        $MASTER_IS_IN_RECOVERY = 'f' && \
+        $STANDBY_IS_RUNNING -eq 1 && \
+        $STANDBY_IS_IN_RECOVERY = 't' ]]; then
+    FAILOVER_READY=1
+  else
+    FAILOVER_READY=0
+  fi
 
+  if [ $FAILOVER_READY -ne 1 ]; then
+    echo "Unable to failover. Exiting..."
+    exit 1
+  fi
 
   printf "\033[1A"
   print_h2 "Stopping load balancer on standby node"
@@ -657,9 +694,24 @@ function failback() {
   print_h1 "Starting $FUNCNAME..."
   cd_docker_dir
 
+  declare -i MASTER_IS_RUNNING=$(is_running master)
+  declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+  declare -i STANDBY_IS_RUNNING=$(is_running standby)
+  declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
 
-  # TODO add pre-checks
+  if [[ $MASTER_IS_RUNNING -eq 1 && \
+        $MASTER_IS_IN_RECOVERY = 't' && \
+        $STANDBY_IS_RUNNING -eq 1 && \
+        $STANDBY_IS_IN_RECOVERY = 'f' ]]; then
+    FAILBACK_READY=1
+  else
+    FAILBACK_READY=0
+  fi
 
+  if [ $FAILBACK_READY -ne 1 ]; then
+    echo "Unable to failback. Exiting..."
+    exit 1
+  fi
 
   printf "\033[1A"
   print_h2 "Stopping load balancer on standby node"
