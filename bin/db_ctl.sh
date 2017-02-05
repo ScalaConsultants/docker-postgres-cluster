@@ -177,15 +177,15 @@ function wait_for_db() {
   MAX_TRIES=50
   while [[ "$MAX_TRIES" != "0" ]]; do
     if [ "$1" != "" ]; then
-      EXISTS=$($DOCKER_COMPOSE_CMD exec -T $1 gosu postgres psql -tnAc "SELECT 1" postgres || true)
+      EXISTS=$(echo $($DOCKER_COMPOSE_CMD exec -T $1 bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres" || true) | tr -d '\r')
       if [ "${EXISTS}" != "1" ]; then
         sleep $TIMEOUT
       else
         break
       fi
     else
-      MASTER_EXISTS=$($DOCKER_COMPOSE_CMD exec -T master gosu postgres psql -tnAc "SELECT 1" postgres || true)
-      STANDBY_EXISTS=$($DOCKER_COMPOSE_CMD exec -T standby gosu postgres psql -tnAc "SELECT 1" postgres || true)
+      MASTER_EXISTS=$(echo $($DOCKER_COMPOSE_CMD exec -T master bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres" || true) | tr -d '\r')
+      STANDBY_EXISTS=$(echo $($DOCKER_COMPOSE_CMD exec -T standby bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres" || true) | tr -d '\r')
       if [[ "$MASTER_EXISTS" != "1" || "$STANDBY_EXISTS" != "1" ]]; then
         sleep $TIMEOUT
       else
