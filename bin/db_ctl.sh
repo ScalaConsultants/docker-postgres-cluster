@@ -177,16 +177,16 @@ function wait_for_db() {
   MAX_TRIES=50
   while [[ "$MAX_TRIES" != "0" ]]; do
     if [ "$1" != "" ]; then
-      EXISTS=$(echo $($DOCKER_COMPOSE_CMD exec -T $1 bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres" || true) | tr -d '\r')
-      if [ "${EXISTS}" != "1" ]; then
+      declare -i EXISTS="$($DOCKER_COMPOSE_CMD exec -T $1 bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres 2>/dev/null || true" | tr -d '\r')"
+      if [ $EXISTS -ne 1 ]; then
         sleep $TIMEOUT
       else
         break
       fi
     else
-      MASTER_EXISTS=$(echo $($DOCKER_COMPOSE_CMD exec -T master bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres" || true) | tr -d '\r')
-      STANDBY_EXISTS=$(echo $($DOCKER_COMPOSE_CMD exec -T standby bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres" || true) | tr -d '\r')
-      if [[ "$MASTER_EXISTS" != "1" || "$STANDBY_EXISTS" != "1" ]]; then
+      declare -i MASTER_EXISTS="$($DOCKER_COMPOSE_CMD exec -T master bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres 2>/dev/null || true" | tr -d '\r')"
+      declare -i STANDBY_EXISTS="$($DOCKER_COMPOSE_CMD exec -T master bash -c "gosu postgres psql -tnAc 'SELECT 1' postgres 2>/dev/null || true" | tr -d '\r')"
+      if [[ $MASTER_EXISTS -ne 1 || $STANDBY_EXISTS -ne 1 ]]; then
         sleep $TIMEOUT
       else
         break
@@ -599,7 +599,7 @@ function failover() {
   print_h2 "Stopping load balancer on standby node"
   $DOCKER_COMPOSE_CMD exec standby gosu postgres pcp_detach_node -w -n 0
   $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_detach_node -w -n 0
-  sleep 20
+  sleep 10
   docker network disconnect $(echo $COMPOSE_PROJECT_NAME | sed -e 's/\-//')_frontend ${COMPOSE_PROJECT_NAME}-master
   $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_stop_pgpool -w
 
@@ -717,7 +717,7 @@ function failback() {
   print_h2 "Stopping load balancer on standby node"
   $DOCKER_COMPOSE_CMD exec master gosu postgres pcp_detach_node -w -n 1
   $DOCKER_COMPOSE_CMD exec standby gosu postgres pcp_detach_node -w -n 1
-  sleep 20
+  sleep 10
   docker network disconnect $(echo $COMPOSE_PROJECT_NAME | sed -e 's/\-//')_frontend ${COMPOSE_PROJECT_NAME}-standby
   $DOCKER_COMPOSE_CMD exec standby gosu postgres pcp_stop_pgpool -w
 
