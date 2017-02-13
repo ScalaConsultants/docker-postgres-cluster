@@ -126,6 +126,10 @@ function is_existing() {
   docker-compose ps | grep -c master
 }
 
+function is_folder_exist() {
+  docker-machine ssh $1 "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0"
+}
+
 function detect_recovery_target() {
   [ "$PWD" != "$ROOT_DIR/docker" ] && cd_docker_dir
   declare -i MASTER_IS_RUNNING=$(is_running master)
@@ -215,8 +219,8 @@ function init() {
   cd_docker_dir
 
   if [ $RUNNING_ON_SWARM -eq 1 ]; then
-    declare -i MASTER_FOLDER_EXIST="$(docker-machine ssh ${MASTER_NODE} "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0")"
-    declare -i STANDBY_FOLDER_EXIST="$(docker-machine ssh ${STANDBY_NODE} "(test -d /data/docker/${COMPOSE_PROJECT_NAME} && echo 1) || echo 0")"
+    declare -i MASTER_FOLDER_EXIST="$(is_folder_exist ${MASTER_NODE})"
+    declare -i STANDBY_FOLDER_EXIST="$(is_folder_exist ${STANDBY_NODE})"
 
     if [ "$1" = "-f" ]; then
       printf "\033[1A"
@@ -230,10 +234,20 @@ function init() {
 
       if [ $MASTER_FOLDER_EXIST -eq 1 ]; then
         docker-machine ssh $MASTER_NODE mv -vf /data/docker/$COMPOSE_PROJECT_NAME /data/docker/$COMPOSE_PROJECT_NAME-$TS
+        docker-machine ssh $MASTER_NODE mkdir -p /data/docker/$COMPOSE_PROJECT_NAME/master/etc/pgpool2
+        cat $ROOT_DIR/docker/files/pgpool2/pgpool.conf | docker-machine ssh $MASTER_NODE "cat - > /data/docker/$COMPOSE_PROJECT_NAME/master/etc/pgpool2/pgpool.conf"
+        cat $ROOT_DIR/docker/files/pgpool2/pool_hba.conf | docker-machine ssh $MASTER_NODE "cat - > /data/docker/$COMPOSE_PROJECT_NAME/master/etc/pgpool2/pool_hba.conf"
+        docker-machine ssh $MASTER_NODE chmod -R u=rwX,g=rX,o= /data/docker/$COMPOSE_PROJECT_NAME/master/etc/pgpool2
+        docker-machine ssh $MASTER_NODE chown -R 999:999 /data/docker/$COMPOSE_PROJECT_NAME/master/etc/pgpool2
       fi
 
       if [ $STANDBY_FOLDER_EXIST -eq 1 ]; then
         docker-machine ssh $STANDBY_NODE mv -vf /data/docker/$COMPOSE_PROJECT_NAME /data/docker/$COMPOSE_PROJECT_NAME-$TS
+        docker-machine ssh $STANDBY_NODE mkdir -p /data/docker/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2
+        cat $ROOT_DIR/docker/files/pgpool2/pgpool.conf | docker-machine ssh $STANDBY_NODE "cat - > /data/docker/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2/pgpool.conf"
+        cat $ROOT_DIR/docker/files/pgpool2/pool_hba.conf | docker-machine ssh $STANDBY_NODE "cat - > /data/docker/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2/pool_hba.conf"
+        docker-machine ssh $STANDBY_NODE chmod -R u=rwX,g=rX,o= /data/docker/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2
+        docker-machine ssh $STANDBY_NODE chown -R 999:999 /data/docker/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2
       fi
     else
       echo "Unable to initialize cluster."
@@ -250,6 +264,12 @@ function init() {
 
         print_h2 "Moving existing data folders"
         mv -vf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME-$(date +%Y%m%d-%H%M%S)
+        mkdir -p $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/master/etc/pgpool2
+        mkdir -p $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2
+        cp $ROOT_DIR/docker/files/pgpool2/pgpool.conf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/master/etc/pgpool2/
+        cp $ROOT_DIR/docker/files/pgpool2/pgpool.conf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2/
+        cp $ROOT_DIR/docker/files/pgpool2/pool_hba.conf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/master/etc/pgpool2/
+        cp $ROOT_DIR/docker/files/pgpool2/pool_hba.conf $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/standby/etc/pgpool2/
       else
         echo "Unable to initialize cluster."
         echo "Data folders already exists (use -f to force removal)."
@@ -408,9 +428,13 @@ function status() {
   if [ $RUNNING_ON_SWARM -eq 1 ]; then
     declare -i MASTER_IS_ALIVE=$(is_alive $(docker-machine ip $MASTER_NODE))
     declare -i STANDBY_IS_ALIVE=$(is_alive $(docker-machine ip $STANDBY_NODE))
+    declare -i MASTER_FOLDER_EXIST=$(is_folder_exist ${MASTER_NODE})
+    declare -i STANDBY_FOLDER_EXIST=$(is_folder_exist ${STANDBY_NODE})
   else
     declare -i MASTER_IS_ALIVE=1
     declare -i STANDBY_IS_ALIVE=1
+    declare -i MASTER_FOLDER_EXIST=$( ([ -d $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/master ] && echo 1) || echo 0)
+    declare -i STANDBY_FOLDER_EXIST=$( ([ -d $ROOT_DIR/docker/data/$COMPOSE_PROJECT_NAME/standby ] && echo 1) || echo 0)
   fi
 
   if [ $MASTER_IS_ALIVE -eq 1 ]; then
@@ -418,7 +442,7 @@ function status() {
     declare -i MASTER_IS_DIRTY=$(is_dirty master)
     declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
 
-    if [ $MASTER_IS_RUNNING -eq 1 ]; then
+    if [[ $MASTER_IS_RUNNING -eq 1 && $MASTER_FOLDER_EXIST -eq 1 ]]; then
       MASTER_DOCKER_OPTS="exec master bash -c"
       if [ "$MASTER_IS_IN_RECOVERY" = "f" ]; then
         MASTER_XLOG_LOCATION=$($DOCKER_COMPOSE_CMD ${MASTER_DOCKER_OPTS} "gosu postgres psql -Atnxc 'select pg_current_xlog_location()' postgres | awk -F '|' '{ print \$2 }'" | tr -d '\r')
@@ -433,7 +457,7 @@ function status() {
     declare -i MASTER_TIMELINE="$($DOCKER_COMPOSE_CMD ${MASTER_DOCKER_OPTS} "gosu postgres pg_controldata | grep ' TimeLineID' | awk -F 'TimeLineID:' '{ gsub(/^[ \\t]+/, \"\", \$2); print \$2 }'" | tr -d '\r')"
   fi
 
-  if [ $STANDBY_IS_ALIVE -eq 1 ]; then
+  if [[ $STANDBY_IS_ALIVE -eq 1 && $STANDBY_FOLDER_EXIST -eq 1  ]]; then
     declare -i STANDBY_IS_RUNNING=$(is_running standby)
     declare -i STANDBY_IS_DIRTY=$(is_dirty standby)
     declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
@@ -457,7 +481,7 @@ function status() {
   printf "\033[1A"
   print_h2 "Cluster nodes"
 
-  if [ $MASTER_IS_ALIVE -eq 1 ]; then
+  if [[ $MASTER_IS_ALIVE -eq 1 && $MASTER_FOLDER_EXIST -eq 1 ]]; then
     printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
       "$(printf "${TEXT_COLOR}%-8s\033[0m" "master")" \
       "$(([ $MASTER_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
@@ -475,7 +499,7 @@ function status() {
       "$(printf "${FAILED_COLOR}-\033[0m")"
   fi
 
-  if [ $STANDBY_IS_ALIVE -eq 1 ]; then
+  if [[ $STANDBY_IS_ALIVE -eq 1 && $STANDBY_FOLDER_EXIST -eq 1 ]]; then
     printf "%s -- running: %s dirty: %s recovery: %s location: %s timeline: %s\n" \
       "$(printf "${TEXT_COLOR}%-8s\033[0m" "standby")" \
       "$(([ $STANDBY_IS_RUNNING -eq 1 ] && printf "${SUCCESS_COLOR}%-6s\033[0m" "true") || printf "${FAILED_COLOR}%-6s\033[0m" "false")" \
@@ -495,7 +519,7 @@ function status() {
 
   print_h2 "Load balancers"
 
-  if [ $MASTER_IS_ALIVE -eq 1 ]; then
+  if [[ $MASTER_IS_ALIVE -eq 1 && $MASTER_FOLDER_EXIST -eq 1 ]]; then
     declare -i MASTER_IS_PGPOOL_RUNNING=$(is_pgpool_running master)
     if [[ $MASTER_IS_RUNNING -eq 1 && $MASTER_IS_PGPOOL_RUNNING -eq 1 ]]; then
       print_node_info master 0
@@ -509,7 +533,7 @@ function status() {
     printf "${TEXT_COLOR}%-8s\033[0m -- backend: ${TEXT_COLOR}%-8s\033[0m port: ${FAILED_COLOR}%-6s\033[0m weight: ${FAILED_COLOR}%-9s\033[0m status: ${FAILED_COLOR}%s\033[0m\n" "master" "standby" "-" "-" "down"
   fi
 
-  if [ $STANDBY_IS_ALIVE -eq 1 ]; then
+  if [[ $STANDBY_IS_ALIVE -eq 1 && $STANDBY_FOLDER_EXIST -eq 1 ]]; then
     declare -i STANDBY_IS_PGPOOL_RUNNING=$(is_pgpool_running standby)
     if [[ $STANDBY_IS_RUNNING -eq 1 && $STANDBY_IS_PGPOOL_RUNNING -eq 1 ]]; then
       print_node_info standby 0

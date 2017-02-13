@@ -14,6 +14,7 @@ services:
       - "affinity:container!=standby"
       - "constraint:node==${MASTER_NODE}"
     volumes:
+      - ${MASTER_VOLUME_ETC_PGPOOL}:/etc/pgpool2
       - ${MASTER_VOLUME_ETC_SSH}:/etc/ssh
       - ${MASTER_VOLUME_ROOT_SSH}:/root/.ssh
       - ${MASTER_VOLUME_POSTGRES_SSH}:/var/lib/postgresql/.ssh
@@ -40,6 +41,7 @@ services:
       - "affinity:container!=master"
       - "constraint:node==${STANDBY_NODE}"
     volumes:
+      - ${STANDBY_VOLUME_ETC_PGPOOL}:/etc/pgpool2
       - ${STANDBY_VOLUME_ETC_SSH}:/etc/ssh
       - ${STANDBY_VOLUME_ROOT_SSH}:/root/.ssh
       - ${STANDBY_VOLUME_POSTGRES_SSH}:/var/lib/postgresql/.ssh
