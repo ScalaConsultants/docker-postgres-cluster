@@ -65,8 +65,8 @@ fi
 rm -f /var/run/postgresql/.s*
 
 if [ ! -f /etc/pgpool2/pool_passwd ]; then
-  pg_md5 -m -u $POSTGRES_USER $POSTGRES_PASSWORD
-  pg_md5 -m -u $REPLICATION_USER $REPLICATION_PASSWORD
+  gosu postgres pg_md5 -m -u $POSTGRES_USER $POSTGRES_PASSWORD
+  gosu postgres pg_md5 -m -u $REPLICATION_USER $REPLICATION_PASSWORD
 fi
 
 echo $PCP_USER:$(echo -n $PCP_PASSWORD | md5sum | awk '{ print $1 }') > /etc/pgpool2/pcp.conf

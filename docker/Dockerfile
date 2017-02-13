@@ -37,7 +37,7 @@ ADD files/pgpool2/pgpool.conf /etc/pgpool2/
 
 ADD files/pgpool2/pool_hba.conf /etc/pgpool2/
 
-ADD files/pgpool2/pool_passwd /etc/pgpool2/
+RUN chown -R postgres:postgres /etc/pgpool2
 
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 

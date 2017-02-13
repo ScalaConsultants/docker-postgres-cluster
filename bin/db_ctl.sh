@@ -214,6 +214,23 @@ function enable_ssh_auth() {
   $DOCKER_COMPOSE_CMD exec -T --user $USER_NAME standby bash -c "ssh-keyscan -H master,$MASTER_IP >> $USER_HOMEDIR/.ssh/known_hosts"
 }
 
+function set_docker_mode() {
+  declare -i NODE_COUNT=$(docker-machine ls -q 2>/dev/null | grep -cE "^${MASTER_NODE}|${STANDBY_NODE}$")
+  if [[ $NODE_COUNT -eq 2 && "$DOCKER_MACHINE_NAME" != "" ]]; then
+    RUNNING_ON_SWARM=1
+  else
+    RUNNING_ON_SWARM=0
+  fi
+  if [ $RUNNING_ON_SWARM -eq 1 ]; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+  else
+    DOCKER_COMPOSE_CMD="docker-compose -f docker-compose.single.yml"
+  fi
+
+  export RUNNING_ON_SWARM
+  export DOCKER_COMPOSE_CMD
+}
+
 function init() {
   print_h1 "Initializing PostgreSQL cluster"
   cd_docker_dir
@@ -777,25 +794,87 @@ function failback() {
   cd_root_dir
 }
 
-function set_docker_mode() {
-  declare -i NODE_COUNT=$(docker-machine ls -q 2>/dev/null | grep -cE "^${MASTER_NODE}|${STANDBY_NODE}$")
-  if [[ $NODE_COUNT -eq 2 && "$DOCKER_MACHINE_NAME" != "" ]]; then
-    RUNNING_ON_SWARM=1
-  else
-    RUNNING_ON_SWARM=0
-  fi
-  if [ $RUNNING_ON_SWARM -eq 1 ]; then
-    DOCKER_COMPOSE_CMD="docker-compose"
-  else
-    DOCKER_COMPOSE_CMD="docker-compose -f docker-compose.single.yml"
-  fi
+function user() {
+  cd_docker_dir
 
-  export RUNNING_ON_SWARM
-  export DOCKER_COMPOSE_CMD
+  case "$1" in
+    create)
+      print_h1 "Creating user $2..."
+
+      declare -i MASTER_IS_RUNNING=$(is_running master)
+      declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+      declare -i STANDBY_IS_RUNNING=$(is_running standby)
+      declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+
+      if [ $MASTER_IS_RUNNING -eq 1 ]; then
+        if [ $MASTER_IS_IN_RECOVERY = 'f' ]; then
+          $DOCKER_COMPOSE_CMD exec master gosu postgres psql -c "create user $2 with password '$(echo "$3" | sed -e "s/'/''/")';" postgres
+        fi
+        $DOCKER_COMPOSE_CMD exec master bash -c "gosu postgres pg_md5 -m -u $2 $(echo $3 | sed -e "s/'/\\\\'/")"
+      fi
+
+      if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+        if [ $STANDBY_IS_IN_RECOVERY = 'f' ]; then
+          $DOCKER_COMPOSE_CMD exec standby gosu postgres psql -c "create user $2 with password '$(echo "$3" | sed -e "s/'/''/")';" postgres
+        fi
+        $DOCKER_COMPOSE_CMD exec standby bash -c "gosu postgres pg_md5 -m -u $2 $(echo $3 | sed -e "s/'/\\\\'/")"
+      fi
+    ;;
+
+    delete)
+      print_h1 "Deleting user $2..."
+      declare -i MASTER_IS_RUNNING=$(is_running master)
+      declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+      declare -i STANDBY_IS_RUNNING=$(is_running standby)
+      declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+
+      if [ $MASTER_IS_RUNNING -eq 1 ]; then
+        if [ $MASTER_IS_IN_RECOVERY = 'f' ]; then
+          $DOCKER_COMPOSE_CMD exec master gosu postgres psql -c "drop user $2;" postgres
+        fi
+        $DOCKER_COMPOSE_CMD exec master bash -c "gosu postgres sed -i '/^$2:/d' /etc/pgpool2/pool_passwd"
+      fi
+
+      if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+        if [ $STANDBY_IS_IN_RECOVERY = 'f' ]; then
+          $DOCKER_COMPOSE_CMD exec standby gosu postgres psql -c "drop user $2;" postgres
+        fi
+        $DOCKER_COMPOSE_CMD exec standby bash -c "gosu postgres sed -i '/^$2:/d' /etc/pgpool2/pool_passwd"
+      fi
+    ;;
+
+    password)
+      print_h1 "Updating password for user $2..."
+      declare -i MASTER_IS_RUNNING=$(is_running master)
+      declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
+      declare -i STANDBY_IS_RUNNING=$(is_running standby)
+      declare -a STANDBY_IS_IN_RECOVERY=$(is_in_recovery standby)
+
+      if [ $MASTER_IS_RUNNING -eq 1 ]; then
+        if [ $MASTER_IS_IN_RECOVERY = 'f' ]; then
+          $DOCKER_COMPOSE_CMD exec master gosu postgres psql -c "alter user $2 with password '$(echo "$3" | sed -e "s/'/''/")';" postgres
+        fi
+        $DOCKER_COMPOSE_CMD exec master bash -c "gosu postgres pg_md5 -m -u $2 $(echo $3 | sed -e "s/'/\\\\'/")"
+      fi
+
+      if [ $STANDBY_IS_RUNNING -eq 1 ]; then
+        if [ $STANDBY_IS_IN_RECOVERY = 'f' ]; then
+          $DOCKER_COMPOSE_CMD exec standby gosu postgres psql -c "alter user $2 with password '$(echo "$3" | sed -e "s/'/''/")';" postgres
+        fi
+        $DOCKER_COMPOSE_CMD exec standby bash -c "gosu postgres pg_md5 -m -u $2 $(echo $3 | sed -e "s/'/\\\\'/")"
+      fi
+
+    ;;
+    *)
+      ls
+    ;;
+  esac
+  cd_root_dir
 }
 
 FUNC=$1; shift
+ARGS=$(for i in $@; do echo -n "\"$i\" "; done)
 set_docker_mode
-(eval "$FUNC $@") || (print_error $FUNC && exit 1)
+(eval $FUNC $ARGS) || (print_error $FUNC && exit 1)
 print_info $FUNC
 cd_root_dir
