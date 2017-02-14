@@ -2,7 +2,13 @@
 
 export ROOT_DIR=$(realpath "$(dirname $(realpath $0))/.." )
 
-export $(cat $ROOT_DIR/etc/env.sh)
+if [ "$1" = "-f" ]; then
+  ENVFILE=$2; shift; shift
+else
+  ENVFILE=$ROOT_DIR/etc/env.sh
+fi
+
+export $(cat $ENVFILE)
 
 if [ "$DEBUG" = "1" ]; then
   set -x
@@ -800,6 +806,9 @@ function user() {
   case "$1" in
     create)
       print_h1 "Creating user $2..."
+      if [[ "$2" = "" || "$3" = "" ]]; then
+        exit 1
+      fi
 
       declare -i MASTER_IS_RUNNING=$(is_running master)
       declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
@@ -845,6 +854,10 @@ function user() {
 
     password)
       print_h1 "Updating password for user $2..."
+      if [[ "$2" = "" || "$3" = "" ]]; then
+        exit 1
+      fi
+
       declare -i MASTER_IS_RUNNING=$(is_running master)
       declare -a MASTER_IS_IN_RECOVERY=$(is_in_recovery master)
       declare -i STANDBY_IS_RUNNING=$(is_running standby)
@@ -866,7 +879,11 @@ function user() {
 
     ;;
     *)
-      ls
+      # HELP
+      echo help
+      if [[ "$1" != "help" && "$1" != "--help" && "$1" != "-h" ]]; then
+        exit 1
+      fi
     ;;
   esac
   cd_root_dir
