@@ -64,6 +64,8 @@ This can be override using `-f` flag, ie. `./bin/db_ctl.sh -f etc/env.prod.sh`
 | `POSTGRES_FRONTEND_SUBNET` | `10.0.1.0/24` | Subnet of the `frontend` network. |
 | `COMPOSE_PROJECT_NAME` | `postgres-cluster` | Used as a naming prefix for containers and networks. Useful for multi tenancy. |
 | `COMPOSE_HTTP_TIMEOUT` | `300` | Docker API timeout. |
+| `DOCKER_HUB_IMAGE` | `true` | Use Docker HUB image. |
+| `DOCKER_HUB_IMAGE_VERSION` | `latest` | Version tag for Docker HUB image. |
 | `DOCKER_REGISTRY_HOST` | `192.168.56.10` | Docker Registry address. Not used in single mode. |
 | `DOCKER_REGISTRY_PORT` | `5000` | Docker Registry port. Not used in single mode. |
 | `MASTER_VOLUME_ETC_PGPOOL` | `/data/docker/postgres-cluster/master/etc/pgpool2` | PgPool configuration directory on `master` node. |
