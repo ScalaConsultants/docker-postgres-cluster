@@ -354,8 +354,7 @@ function init() {
     $DOCKER_COMPOSE_CMD down
     $DOCKER_COMPOSE_CMD up -d
   fi
-
-  $DOCKER_COMPOSE_CMD exec -T master gosu postgres psql -c "create table if not exists rewindtest (t text);" postgres
+  
   cd_root_dir
 }
 
