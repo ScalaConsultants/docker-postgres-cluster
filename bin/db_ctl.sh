@@ -325,7 +325,8 @@ function init() {
   fi
 
   if [ "$DOCKER_HUB_IMAGE" = "true" ]; then
-    $DOCKER_COMPOSE_CMD build --pull
+    print_h2 "Pulling image"
+    $DOCKER_COMPOSE_CMD pull
   else
     print_h2 "Building image"
     $DOCKER_COMPOSE_CMD build
@@ -354,7 +355,7 @@ function init() {
     $DOCKER_COMPOSE_CMD down
     $DOCKER_COMPOSE_CMD up -d
   fi
-  
+
   cd_root_dir
 }
 
