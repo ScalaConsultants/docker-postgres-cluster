@@ -3,7 +3,7 @@ services:
   master:
     container_name: ${COMPOSE_PROJECT_NAME}-master
     hostname: master
-    image: postgres-cluster:latest
+    image: ${POSTGRES_CLUSTER_IMAGE}
     build: .
     expose:
       - "5432"
@@ -28,7 +28,7 @@ services:
   standby:
     container_name: ${COMPOSE_PROJECT_NAME}-standby
     hostname: standby
-    image: postgres-cluster:latest
+    image: ${POSTGRES_CLUSTER_IMAGE}
     build: .
     expose:
       - "5432"

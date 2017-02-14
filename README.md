@@ -26,7 +26,8 @@ The following list of commands is available for the `./bin/db_ctl.sh` script.
 
 | Command   | Parameters | Description |
 |---------|---------------|-------|
-| `init` | `[-f]` | Builds and distributes `postgres-cluster` image, creates networks, configures master and standby containers, initializes data directories and configures streaming replication. `-f` is required to move any existing configuration and data files. |
+| `build` |  | Builds and distributes `postgres-cluster` image. |
+| `init` | `[-f]` | Initializes data directories, creates networks and configures streaming replication. `-f` flag is required to move any existing configuration and data files. |
 | `start` |  | Starts containers. |
 | `stop` |   |  Stops containers. |
 | `status` |  | Shows current cluster status. |

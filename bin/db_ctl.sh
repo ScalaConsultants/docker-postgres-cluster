@@ -237,6 +237,29 @@ function set_docker_mode() {
   export DOCKER_COMPOSE_CMD
 }
 
+function build() {
+  print_h1 "Building PostgreSQL cluster image"
+  cd_docker_dir
+
+  if [ "$DOCKER_HUB_IMAGE" = "true" ]; then
+    echo "Unable to build image if DOCKER_HUB_IMAGE=true. Exiting..."
+    exit 0
+  fi
+
+  print_h2 "Building image"
+  $DOCKER_COMPOSE_CMD build
+
+  if [ $RUNNING_ON_SWARM -eq 1 ]; then
+    print_h2 "Pushing image"
+    $DOCKER_COMPOSE_CMD push
+
+    print_h2 "Pulling image"
+    $DOCKER_COMPOSE_CMD pull
+  fi
+
+  cd_root_dir
+}
+
 function init() {
   print_h1 "Initializing PostgreSQL cluster"
   cd_docker_dir
@@ -301,16 +324,19 @@ function init() {
     fi
   fi
 
+  if [ "$DOCKER_HUB_IMAGE" = "true" ]; then
+    $DOCKER_COMPOSE_CMD build --pull
+  else
+    print_h2 "Building image"
+    $DOCKER_COMPOSE_CMD build
 
-  print_h2 "Building image"
-  $DOCKER_COMPOSE_CMD build
+    if [ $RUNNING_ON_SWARM -eq 1 ]; then
+      print_h2 "Pushing image"
+      $DOCKER_COMPOSE_CMD push
 
-  if [ $RUNNING_ON_SWARM -eq 1 ]; then
-    print_h2 "Pushing image"
-    $DOCKER_COMPOSE_CMD push
-
-    print_h2 "Pulling image"
-    $DOCKER_COMPOSE_CMD pull
+      print_h2 "Pulling image"
+      $DOCKER_COMPOSE_CMD pull
+    fi
   fi
 
   print_h2 "Enabling SSH authentication"
@@ -892,6 +918,17 @@ function user() {
 FUNC=$1; shift
 ARGS=$(for i in $@; do echo -n "\"$i\" "; done)
 set_docker_mode
+
+if [ "$DOCKER_HUB_IMAGE" = "true" ]; then
+  export POSTGRES_CLUSTER_IMAGE=scalac/postgres-cluster:$DOCKER_HUB_IMAGE_VERSION
+else
+  if [ $RUNNING_ON_SWARM -eq 1 ]; then
+    export POSTGRES_CLUSTER_IMAGE=$DOCKER_REGISTRY_HOST:$DOCKER_REGISTRY_PORT/postgres-cluster:latest
+  else
+    export POSTGRES_CLUSTER_IMAGE=postgres-cluster:latest
+  fi
+fi
+
 (eval $FUNC $ARGS) || (print_error $FUNC && exit 1)
 print_info $FUNC
 cd_root_dir

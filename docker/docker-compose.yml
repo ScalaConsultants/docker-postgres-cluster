@@ -31,7 +31,7 @@ services:
   standby:
     container_name: ${COMPOSE_PROJECT_NAME}-standby
     hostname: standby
-    image: ${DOCKER_REGISTRY_HOST}:${DOCKER_REGISTRY_PORT}/postgres-cluster:latest
+    image: ${POSTGRES_CLUSTER_IMAGE}
     expose:
       - "5432"
     env_file:
