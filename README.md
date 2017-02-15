@@ -4,7 +4,7 @@ This repository maintain a code needed to run PostgreSQL cluster in streaming re
 It utilize Docker Swarm, but it can be run on a single host, ie. for testing purposes.
 It solves automatic and manual failover and manual recovery and failback. It uses constraints and labels to ensure proper containers scheduling.
 
-> At the moment this solution uses `restart: none` policy to avoid starting failed container during Swarm node startup. It requires external governor like `systemd`.
+> At the moment this solution uses `restart: none` policy to avoid starting failed container during Docker host startup. It requires external governor like `systemd`.
 
 #### Prerequisites:
 
@@ -24,12 +24,14 @@ It solves automatic and manual failover and manual recovery and failback. It use
 
 ##### Storage
 
-All configuration and data files are stored locally on Docker host in directories defined in the configuration file by `MASTER_VOLUME_*` and `STANDBY_VOLUME_*` variables. Defined paths refer to the Docker host file system, not to the file system inside the containers. For more details see [configuration section](#configuration).
+All configuration and data files are stored locally on Docker host in directories defined in the configuration file by `MASTER_VOLUME_*` and `STANDBY_VOLUME_*` variables. Defined paths refer to the Docker host file system, not to the file system inside a containers. For more details see [configuration section](#configuration).
 
 ##### Network
 
-| Network name | Type | Description |
-|--------------|------|-------------|
+To support load balancing between nodes both are using the same alias defined by `PGPOOL_ALIAS` variable. Application can connect to the active PgPool node through `frontend` network defined by `POSTGRES_BACKEND_SUBNET` variable. For more details see [configuration section](#configuration).
+
+| Network | Type | Description |
+|---------|------|-------------|
 | `POSTGRES_BACKEND_SUBNET` | `internal` | Used for communication between PgPool and PostgreSQL and for streaming replication. |
 | `POSTGRES_FRONTEND_SUBNET` | `external` | Used for communication between client applications and PgPool. |
 
