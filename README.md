@@ -24,7 +24,7 @@ It solves automatic and manual failover and manual recovery and failback. It use
 
 ##### Storage
 
-All configuration and data files are stored locally on Docker host in directories defined in the configuration file by `MASTER_VOLUME_*` and `STANDBY_VOLUME_*` variables. Defined paths refer to the Docker host file system, not to the files system inside the containers. For more details see [configuration section](#configuration).
+All configuration and data files are stored locally on Docker host in directories defined in the configuration file by `MASTER_VOLUME_*` and `STANDBY_VOLUME_*` variables. Defined paths refer to the Docker host file system, not to the file system inside the containers. For more details see [configuration section](#configuration).
 
 ##### Network
 
