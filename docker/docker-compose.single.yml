@@ -12,10 +12,11 @@ services:
     environment:
       - "IMAGE_TYPE=master"
     volumes:
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/etc/pgpool2:/etc/pgpool2
       - ${ROOT_DIR}/docker/data/postgres-cluster/master/etc/ssh:/etc/ssh
       - ${ROOT_DIR}/docker/data/postgres-cluster/master/root/ssh:/root/.ssh
-      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgres/ssh:/var/lib/postgresql/.ssh
-      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgres/archive:/var/lib/postgresql/archive
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgresql/ssh:/var/lib/postgresql/.ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgresql/archive:/var/lib/postgresql/archive
       - ${ROOT_DIR}/docker/data/postgres-cluster/master/postgresql/data:/var/lib/postgresql/data
     dns_search: .
     networks:
@@ -37,10 +38,11 @@ services:
     environment:
       - "IMAGE_TYPE=standby"
     volumes:
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/etc/pgpool2:/etc/pgpool2
       - ${ROOT_DIR}/docker/data/postgres-cluster/standby/etc/ssh:/etc/ssh
       - ${ROOT_DIR}/docker/data/postgres-cluster/standby/root/ssh:/root/.ssh
-      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgres/ssh:/var/lib/postgresql/.ssh
-      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgres/archive:/var/lib/postgresql/archive
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgresql/ssh:/var/lib/postgresql/.ssh
+      - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgresql/archive:/var/lib/postgresql/archive
       - ${ROOT_DIR}/docker/data/postgres-cluster/standby/postgresql/data:/var/lib/postgresql/data
     dns_search: .
     networks:
