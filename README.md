@@ -20,7 +20,7 @@ It solves automatic and manual failover and manual recovery and failback. It use
 
 #### Architecture
 
-![img](docs/images/architecture.svg)
+![img](https://scalaconsultants.github.io/docker-postgres-cluster/images/architecture.svg)
 
 ##### Storage
 
