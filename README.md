@@ -20,6 +20,17 @@ It solves automatic and manual failover and manual recovery and failback. It use
 
 #### Architecture
 
+##### Storage
+
+All configuration and data files are stored locally on Docker host in directories defined in the configuration file by `MASTER_VOLUME_*` and `STANDBY_VOLUME_*` variables. Defined paths refer to the Docker host file system, not to the files system inside the containers. For more details see [configuration section](#configuration).
+
+##### Network
+
+| Network name | Type | Description |
+|--------------|------|-------------|
+| `POSTGRES_BACKEND_SUBNET` | `internal` | Used for communication between PgPool and PostgreSQL and for streaming replication. |
+| `POSTGRES_FRONTEND_SUBNET` | `external` | Used for communication between client applications and PgPool. |
+
 #### Command line reference
 
 The following list of commands is available for the `./bin/db_ctl.sh` script.
@@ -40,8 +51,7 @@ The following list of commands is available for the `./bin/db_ctl.sh` script.
 
 #### Configuration
 
-For the configuration `etc/env.sh` file is used by default.
-This can be override using `-f` flag, ie. `./bin/db_ctl.sh -f etc/env.prod.sh`
+All configuration settings can be changed in `etc/env.sh` file. You can override default configuration file using `-f` flag, ie. `./bin/db_ctl.sh -f etc/env.prod.sh`. Files matching `etc/env.*.sh` pattern are ignored by `.gitignore`.
 
 | Variable | Default value | Description  |
 |---------------|----------|---|
