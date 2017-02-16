@@ -1,8 +1,12 @@
-# PostgreSQL HA
+# PostgreSQL HA for Docker
 
 This repository maintain a code needed to run PostgreSQL cluster in streaming replication mode with PgPool inside a Docker containers.
 It utilize Docker Swarm, but it can be run on a single host, ie. for testing purposes.
-It solves automatic and manual failover and manual recovery and failback. It uses constraints and labels to ensure proper containers scheduling.
+
+#### Features:
+ - automatic and manual failover
+ - manual recovery
+ - manual failback
 
 > At the moment this solution uses `restart: none` policy to avoid starting failed container during Docker host startup. It requires external governor like `systemd`.
 
@@ -47,7 +51,7 @@ The following list of commands is available for the `./bin/db_ctl.sh` script.
 | `stop` |   |  Stops containers. |
 | `status` |  | Shows current cluster status. |
 | `failover` |  | Failover gracefully. |
-| `recovery` | `[-f]` | Recovers failed node. `-f` flag is required to perform `full recovery` an to move any existing configuration and data files. |
+| `recovery` | `[-f]` | Recovers failed node. `-f` flag is required to perform `full recovery` and to move any existing configuration and data files. |
 | `failback` |  | Failback gracefully. |
 | `user create` | `<username> <password>` | Creates user account. |
 | `user delete` | `<username>` | Deletes user account. |
